@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gitvulture"
+version = "1.0.0"
+description = "Ultimate .git exposure exploitation framework"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx[http2]>=0.27",
+    "rich>=13",
+    "aiofiles>=23",
+    "python-dotenv>=1.0",
+    "emergentintegrations==0.2.0",
+]
+
+[project.scripts]
+gitvulture = "gitvulture.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["gitvulture*"]

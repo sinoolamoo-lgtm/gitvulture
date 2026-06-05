@@ -1,56 +1,74 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import "@/index.css";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import { BrowserRouter, Routes, Route, Link, useNavigate, useParams } from "react-router-dom";
+import { Toaster } from "sonner";
+import Dashboard from "@/pages/Dashboard";
+import ScanDetails from "@/pages/ScanDetails";
+import { Crosshair, Terminal, Cpu, Activity, BookOpen } from "lucide-react";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
+function Header() {
   return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
-
-function App() {
-  return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </div>
+    <header className="header-glass sticky top-0 z-50">
+      <div className="max-w-[1600px] mx-auto px-6 py-3 flex items-center justify-between">
+        <Link to="/" className="flex items-center gap-3" data-testid="header-logo">
+          <div className="w-8 h-8 border border-white flex items-center justify-center">
+            <Crosshair size={18} className="text-white" />
+          </div>
+          <div>
+            <div className="font-display text-xl font-extrabold tracking-tight uppercase leading-none">
+              Git<span className="text-[#00FF41]">Vulture</span>
+            </div>
+            <div className="font-mono text-[10px] text-[#6E7681] tracking-[0.2em] uppercase mt-0.5">
+              .git exposure exploitation
+            </div>
+          </div>
+        </Link>
+        <nav className="flex items-center gap-1">
+          <Link to="/" className="btn-ghost" data-testid="nav-scans">
+            <Activity size={12} className="inline mr-2 -mt-0.5" /> Scans
+          </Link>
+          <a
+            href="https://github.com/arthaud/git-dumper"
+            target="_blank"
+            rel="noreferrer"
+            className="btn-ghost"
+            data-testid="nav-docs"
+          >
+            <BookOpen size={12} className="inline mr-2 -mt-0.5" /> Docs
+          </a>
+        </nav>
+      </div>
+    </header>
   );
 }
 
-export default App;
+function Footer() {
+  return (
+    <footer className="border-t border-[#1f1f1f] mt-16">
+      <div className="max-w-[1600px] mx-auto px-6 py-4 flex items-center justify-between font-mono text-[10px] tracking-[0.18em] uppercase text-[#484F58]">
+        <span>GitVulture v1.0 · standalone CLI &amp; Web</span>
+        <span>For authorized testing only · 2026</span>
+      </div>
+    </footer>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <div className="bg-grid min-h-screen">
+        <div className="scan-line" />
+        <Header />
+        <main className="max-w-[1600px] mx-auto px-6 py-8 relative z-10">
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/scan/:id" element={<ScanDetails />} />
+          </Routes>
+        </main>
+        <Footer />
+      </div>
+      <Toaster theme="dark" position="bottom-right" closeButton />
+    </BrowserRouter>
+  );
+}
