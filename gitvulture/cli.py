@@ -92,6 +92,8 @@ def parse_args(argv=None):
                    help="Disable all LLM calls (mechanical-only mode)")
     p.add_argument("--no-escalate", action="store_true",
                    help="Stop after standard 7-phase scan (skip L1-L16 ladder)")
+    p.add_argument("--exploit-roadmap", action="store_true",
+                   help="After scan, ask Claude to draft a ranked exploitation plan")
     p.add_argument("--offensive", action="store_true",
                    help="Allow active probes (SQLi payloads, default-creds POST)")
 
@@ -213,6 +215,7 @@ async def _main_async(args) -> int:
         escalate=escalate,
         offensive=args.offensive,
         s3_hints=args.s3_bucket,
+        exploit_roadmap=args.exploit_roadmap and ai_enabled,
     )
 
     log.kv("target", opts.target_url)
@@ -314,6 +317,58 @@ async def _main_async(args) -> int:
             json.dumps(result.escalation.get("summary", {}), indent=2)[:2000],
             border_style="magenta",
         ))
+
+    # ------------------------------ AI EXPLOIT ROADMAP
+    if result.exploit_roadmap and not result.exploit_roadmap.get("error"):
+        rm = result.exploit_roadmap
+        console.print()
+        console.rule("[bold red]EXPLOIT ROADMAP (AI-generated)[/bold red]", style="red")
+        if rm.get("summary"):
+            console.print(Panel(rm["summary"], title="executive summary",
+                                  border_style="red", padding=(0, 1)))
+        if rm.get("lab_pattern") and rm["lab_pattern"] != "none":
+            console.print(f"  [yellow]lab pattern detected:[/yellow] "
+                          f"[bold]{rm['lab_pattern']}[/bold]")
+        if rm.get("overall_confidence"):
+            console.print(f"  [yellow]overall confidence:[/yellow] "
+                          f"[bold]{rm['overall_confidence']}[/bold]\n")
+        for s in rm.get("scenarios", []):
+            conf_color = {"high": "green", "medium": "yellow", "low": "red"}.get(
+                s.get("confidence", "medium"), "white")
+            console.print(Panel.fit(
+                f"[bold cyan]#{s.get('rank', '?')}  {s.get('title', '')}[/bold cyan]\n"
+                f"[bright_black]impact:[/bright_black] {s.get('impact', '-')}\n"
+                f"[bright_black]effort:[/bright_black] ~{s.get('effort_minutes', '?')} min   "
+                f"[bright_black]confidence:[/bright_black] "
+                f"[{conf_color}]{s.get('confidence', '-')}[/{conf_color}]\n"
+                f"[bright_black]rationale:[/bright_black] {s.get('rationale', '-')}",
+                border_style=conf_color,
+            ))
+            if s.get("exploit_steps"):
+                console.print("  [bold]exploit_steps:[/bold]")
+                for i, step in enumerate(s["exploit_steps"], 1):
+                    console.print(f"    [cyan]{i:>2}.[/cyan] {step}")
+            if s.get("ready_commands"):
+                console.print("  [bold]ready_commands:[/bold]")
+                for cmd in s["ready_commands"]:
+                    console.print(f"    [green]$[/green] [white]{cmd}[/white]")
+            if s.get("mitigations_to_bypass"):
+                console.print("  [bold]mitigations to bypass:[/bold]")
+                for m in s["mitigations_to_bypass"]:
+                    console.print(f"    [yellow]•[/yellow] {m}")
+            console.print()
+        if rm.get("research_questions"):
+            console.print("[bold]research questions to investigate:[/bold]")
+            for q in rm["research_questions"]:
+                console.print(f"  [yellow]?[/yellow] {q}")
+        if rm.get("do_not_retry"):
+            console.print("\n[bold]do NOT retry these vectors:[/bold]")
+            for d in rm["do_not_retry"]:
+                console.print(f"  [bright_black]×[/bright_black] {d}")
+        console.print()
+    elif result.exploit_roadmap and result.exploit_roadmap.get("error"):
+        console.print(f"[red]exploit roadmap error:[/red] "
+                      f"{result.exploit_roadmap['error']}")
 
     # ------------------------------ LOOT SUMMARY (highest-value artifacts)
     recovered_dir = opts.output_dir / "recovered_source"

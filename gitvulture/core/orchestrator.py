@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import time
 from dataclasses import asdict, dataclass, field
@@ -58,6 +59,7 @@ class ScanOptions:
     escalate: bool = False
     offensive: bool = False
     s3_hints: list[str] = field(default_factory=list)
+    exploit_roadmap: bool = False
 
 
 @dataclass
@@ -74,6 +76,7 @@ class ScanResult:
     findings: list[Finding] = field(default_factory=list)
     ai_report: Optional[dict] = None
     escalation: Optional[dict] = None
+    exploit_roadmap: Optional[dict] = None
     object_count: int = 0
     pack_count: int = 0
     waf: Optional[str] = None
@@ -433,6 +436,46 @@ async def run_scan(
                 result.findings.append(f)
             await _emit(progress, {"type": "phase", "phase": "escalation", "status": "done",
                                    "data": esc_report.summary})
+
+        # ----- Phase 9: AI Exploitation Roadmap ----------------------------
+        if opts.exploit_roadmap and os.environ.get("EMERGENT_LLM_KEY"):
+            result.phase = "exploit_roadmap"
+            log.phase("PHASE 9  ::  AI EXPLOITATION ROADMAP")
+            await _emit(progress, {"type": "phase",
+                                    "phase": "exploit_roadmap", "status": "running"})
+            try:
+                from ..ai.exploit_roadmap import generate_roadmap
+                rebuild_dict = {}
+                if rebuild:
+                    rebuild_dict = {
+                        "branches": list(rebuild.branches) if rebuild.branches else [],
+                        "tags": list(rebuild.tags) if rebuild.tags else [],
+                        "commits": [c.__dict__ for c in rebuild.commits[:10]],
+                        "dangling_commits": list(rebuild.dangling_commits or []),
+                        "dangling_blobs": list(rebuild.dangling_blobs or []),
+                    }
+                roadmap = await generate_roadmap(
+                    target_url=opts.target_url,
+                    out_dir=opts.output_dir,
+                    recon=(recon.__dict__ if recon else {}),
+                    rebuild=rebuild_dict,
+                    findings=[f.__dict__ if hasattr(f, "__dict__") else f
+                              for f in result.findings],
+                    escalation=(result.escalation.get("summary") or {})
+                                  if result.escalation else None,
+                    session_id=f"gitvulture-roadmap-{int(started)}",
+                )
+                result.exploit_roadmap = roadmap
+                if roadmap and not roadmap.get("error"):
+                    log.success(
+                        f"roadmap produced  →  "
+                        f"{len(roadmap.get('scenarios', []))} scenarios"
+                    )
+                else:
+                    log.warning(f"roadmap not produced: {roadmap.get('error')}")
+            except Exception as e:
+                log.error(f"exploit_roadmap stage failed: {e}")
+                result.errors.append(f"roadmap: {e}")
 
         result.phase = "done"
         await _emit(progress, {"type": "phase", "phase": "done", "status": "done"})
