@@ -1,82 +1,79 @@
-# GitVulture v1.3 — AI Exploitation Roadmap shipped
+# GitVulture v1.4 — Strict-Mode AI + Interactive TUI + Lazy AI + Residential Proxies
 
-## Latest milestone (this session)
-Added the **`--exploit-roadmap`** flag that produces an AI-generated, ranked
-exploitation plan with ready-to-paste commands.
+## What ships in v1.4 (this session)
 
-### How it works
-After all scan phases + escalation finish, the orchestrator collects:
-- recon (server, WAF, branch, repo URL, dev email)
-- recovered files (paths, sizes, source previews ≤1.5 KB each)
-- private-key inventory (presence + algorithm)
-- git history (commits, dangling, reflog)
-- detected secrets
-- live endpoints + their status/size
-- escalation hit counts per stage
+### 1. AI Strict-Mode (anti-hallucination)
+`/app/gitvulture/ai/exploit_roadmap.py`
+- New SYSTEM_PROMPT requires every scenario to include `evidence_citations`
+  pointing to actual JSON paths inside the artefact bundle
+  (e.g. `recovered_files[3].path`, `recon.head_ref`)
+- New `verification_steps` field per scenario — concrete signals the operator
+  can use to confirm the exploit succeeded
+- `_resolve_citation()` walks the bundle to confirm every cited path exists
+- `_verify_roadmap()`:
+  • REJECTS scenarios with zero valid citations
+  • DOWNGRADES confidence ("high" → "low") if any citation is bogus
+  • Adds `[unverified]` / `[partially verified]` prefix to titles
+  • Logs all warnings to the live verbose stream
+- Bundle now exposes `failed_attacks` array (stages that produced 0 hits) so
+  the LLM cannot re-recommend already-failed vectors
 
-…serializes it into a ≤50 KB JSON bundle and sends it to Claude
-(`claude-sonnet-4-6` via `emergentintegrations.llm.chat.LlmChat` and the
-universal Emergent LLM key). The system prompt asks for STRICT JSON with:
-- executive summary
-- detected lab pattern (portswigger/htb/thm/none)
-- overall confidence
-- 3 ranked scenarios — each with title, rationale, impact, effort, confidence,
-  step list, ready-to-run shell/curl commands, mitigations to bypass
-- research questions for additional time budget
-- "do not retry" — vectors already proven dead
+### 2. Lazy AI
+`/app/gitvulture/cli.py`
+- AI is now **opt-in** (was opt-out). `--ai` or `--exploit-roadmap` to enable.
+- When AI is off, EMERGENT_LLM_KEY is removed from the process env so no
+  downstream module accidentally calls it
+- `--no-ai` retained for backwards compat
 
-### Validated against the PortSwigger lab (https://54.185.155.123/)
-Run command:
-```bash
-gitvulture https://54.185.155.123/ --insecure --i-have-permission \
-           --scope 54.185.155.123 --exploit-roadmap
-```
-Result (~364 s total, 2 AI calls):
+### 3. Interactive TUI (new)
+`/app/gitvulture/interactive.py`
+- `gitvulture --interactive` opens a menu-driven workflow
+- Workflow is a DAG of nodes (start → recon → refs → objects/index → …)
+- User picks options by number or keyword
+- Built-in commands at every prompt:
+  `back · forward · skip · redo · status · proxy · ai · quit · help`
+- AI consultation node ("ai_guide") is OPT-IN per step
+- History stack lets the user rewind to any prior node
+- Proxy can be set/changed at any prompt with the `proxy` command
+- Status command shows what data has been collected so far
 
-1. **#1 Forge Admin JWT via Leaked Keys**  — confidence **high**, ~10 min
-   * Step list + 9 ready commands including PyJWT signing script
-   * Identifies leaked keys as Diskover license-signing material
-2. **#2 SQL Injection via License API**  — confidence medium, ~25 min
-   * 10 ready commands including sqlmap + INTO OUTFILE webshell PoC
-3. **#3 GitHub Repo History Secret Harvest**  — confidence medium, ~15 min
-   * git clone + trufflehog walkthrough
+### 4. Authenticated Residential Proxies
+`/app/gitvulture/cli.py` + `/app/gitvulture/interactive.py`
+- `--proxy http://user:pass@host:port` already worked via httpx — now
+  documented and tested
+- New `--proxy-auth USER:PASS` flag injects creds into an existing
+  `--proxy http://host:port` URL (convenient for residential rotators)
+- Interactive `proxy` command guides user through configuring auth proxy
 
-The AI also produced 2 follow-up research questions and a "do not retry"
-list (.git bypass, pack hunt, S3 enum, alg=none confusion — all proven dead
-on this target).
+### 5. Bypass Library (centralized)
+`/app/gitvulture/bypass_library.py`
+- 40+ path tricks (semicolons, double-slashes, .;/, %2e, ::$DATA, …)
+- 30+ header tricks (X-Original-URL, X-Forwarded-*, Range, Host injection,
+  Forwarded RFC7239, True-Client-IP, CF-Connecting-IP, X-WAP-Profile, …)
+- Encoding variants (single, double, %2f, %u002f, Unicode full-width)
+- 13 HTTP methods (incl. WebDAV: PROPFIND, MKCOL, COPY, MOVE)
+- WAF fingerprint dictionary (12 vendors)
+- Time-based payload templates (MySQL, MSSQL, Postgres)
 
-## Cumulative bug fixes / improvements across sessions
-1. Removed `rich.Progress` spinner → live sqlmap-style streaming logger
-2. Sqlmap-style severity tags + `-v / -vv / -vvv` tiers
-3. 403 bypass scoped to 401/403 only (no more 404 storms)
-4. Soft-404 calibration per host
-5. `git fsck`-compatible `.git/refs/` layout
-6. BFS skips pack-only SHAs
-7. `--no-ai` propagates to escalation (removes EMERGENT_LLM_KEY from env)
-8. L2 upstream pivot: proper suffix stripping + GitHub org sibling repo enum
-9. L14 crypto attacks: scoped to target host only + baseline comparison →
-   eliminated 79 false positives
-10. LOOT table in CLI summary — highlights private keys in red
-11. AI-powered exploitation roadmap (THIS SESSION)
+## Verified
+- `_verify_roadmap()` unit test: rejected fake citations, downgraded uncited
+  scenarios, kept valid ones — assertion-driven test in execute_bash
+- Interactive TUI smoke test against the lab: detected exposure, showed live
+  options, accepted navigation commands
+- AI flag matrix tested: `--ai`, `--no-ai`, `--exploit-roadmap`,
+  `--interactive` all behave per spec
 
-## Files of interest
-- `/app/gitvulture/ai/exploit_roadmap.py` — the new module
-- `/app/gitvulture/logger.py` — sqlmap-style logger
-- `/app/gitvulture/core/orchestrator.py` — phase 9 wiring
-- `/app/gitvulture/cli.py` — `--exploit-roadmap` flag + roadmap render
-- `/app/scripts/jwt_forge_attack.py` — standalone JWT forgery PoC
-- `/app/scripts/auth_brute.py` — Basic-Auth + form-login brute
-- `/tmp/lablootput2/gitvulture-report.json` — full validated lab report
-
-## Next action items (handoff to user)
-- Stage 2/3 of the lab need the user to submit Stage-1 evidence in the
-  PortSwigger lab UI to reveal the medium-stage hash.
-- Execute Scenario #1 from the AI roadmap once that hash is known.
-- For deeper persistence, consider L17 (built-in Basic-Auth brute) and
-  L18 (license-forgery PoC) as future additions.
+## Files touched this session
+- `/app/gitvulture/ai/exploit_roadmap.py` — strict-mode + verifier
+- `/app/gitvulture/cli.py` — lazy AI + `--interactive` + `--proxy-auth`
+- `/app/gitvulture/interactive.py` — new (550 LoC)
+- `/app/gitvulture/bypass_library.py` — new (centralized tricks)
 
 ## Backlog
-- `--exploit-roadmap` should optionally dump the bundle JSON to disk for
-  manual review (`--save-roadmap-bundle`).
-- HTML report for the roadmap (currently console + JSON only).
-- Live-tail mode that streams the AI response token-by-token via SSE.
+- Persist interactive session state to disk so user can resume across runs
+- Hot-swap proxy mid-run via interactive `proxy` command actually replacing
+  the live HttpClient instance (currently only affects next created client)
+- `--auto-exploit` flag that takes the top scenario from a verified roadmap
+  and executes its `ready_commands` automatically inside `--scope`
+- Add WebDAV (PROPFIND/MKCOL) probes to the standard ladder
+- Surface bypass_library tricks into the http_client's bypass chain

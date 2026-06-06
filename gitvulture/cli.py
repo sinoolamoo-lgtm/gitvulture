@@ -88,14 +88,24 @@ def parse_args(argv=None):
     p.add_argument("--json-log", help="Write structured JSON-lines log to file")
 
     # AI gating
+    p.add_argument("--ai", action="store_true",
+                   help="Enable AI triage + roadmap (default: OFF; AI is "
+                        "opt-in to avoid noise and only fires on demand)")
     p.add_argument("--no-ai", action="store_true",
-                   help="Disable all LLM calls (mechanical-only mode)")
+                   help="(legacy) Force disable LLM calls — kept for compat")
     p.add_argument("--no-escalate", action="store_true",
                    help="Stop after standard 7-phase scan (skip L1-L16 ladder)")
     p.add_argument("--exploit-roadmap", action="store_true",
-                   help="After scan, ask Claude to draft a ranked exploitation plan")
+                   help="After scan, ask Claude (strict-mode, evidence-cited) "
+                        "for a ranked exploitation plan. Implies --ai.")
+    p.add_argument("--interactive", "-i", action="store_true",
+                   help="Open interactive TUI: navigate phases manually, "
+                        "back/forward/skip, ask AI only on demand")
     p.add_argument("--offensive", action="store_true",
                    help="Allow active probes (SQLi payloads, default-creds POST)")
+    p.add_argument("--proxy-auth", metavar="USER:PASS",
+                   help="Inject credentials into --proxy URL "
+                        "(for residential proxies)")
 
     # HTTP
     p.add_argument("--no-bypass-403", action="store_true",
@@ -145,9 +155,33 @@ async def _main_async(args) -> int:
                 console.print(f"  {ico} {s['name']}  {s['size_kb']} KB  {s['path']}")
         return 0
 
-    if not args.target:
-        console.print("[red]error:[/red] target URL is required (or use --list-targets)")
+    if not args.target and not args.interactive:
+        console.print("[red]error:[/red] target URL is required "
+                      "(or use --interactive / --list-targets)")
         return 2
+
+    # ------------------------------ Interactive mode short-circuit
+    if args.interactive:
+        # Init a lightweight logger for the interactive runner
+        init_logger(
+            verbose=args.verbose,
+            quiet=args.quiet,
+            no_color=args.no_color,
+        )
+        from .interactive import InteractiveRunner
+        runner = InteractiveRunner(console)
+        if args.target:
+            runner.state.target_url = args.target.rstrip("/")
+        if args.proxy:
+            proxy = args.proxy
+            if args.proxy_auth:
+                from urllib.parse import urlparse, urlunparse
+                u = urlparse(proxy)
+                netloc = f"{args.proxy_auth}@{u.hostname}:{u.port}" if u.port \
+                         else f"{args.proxy_auth}@{u.hostname}"
+                proxy = urlunparse((u.scheme, netloc, u.path or "", "", "", ""))
+            runner.state.proxy = proxy
+        return await runner.run()
 
     # ------------------------------ legal scope gate
     from urllib.parse import urlparse
@@ -190,14 +224,26 @@ async def _main_async(args) -> int:
         out_dir = new_scan_dir(args.target)
 
     # ------------------------------ build scan opts
-    ai_enabled = not args.no_ai and bool(os.environ.get("EMERGENT_LLM_KEY"))
-    if args.no_ai:
-        log.info("AI disabled (--no-ai): running mechanical-only")
+    # AI is now OPT-IN only (was opt-out). Use --ai or --exploit-roadmap.
+    user_wants_ai = (args.ai or args.exploit_roadmap) and not args.no_ai
+    ai_enabled = user_wants_ai and bool(os.environ.get("EMERGENT_LLM_KEY"))
+    if args.no_ai or not user_wants_ai:
+        log.info("AI disabled (lazy mode): mechanical-only")
         # Hide the key from ALL downstream code (escalation reads env directly)
         os.environ.pop("EMERGENT_LLM_KEY", None)
-    elif not os.environ.get("EMERGENT_LLM_KEY"):
+    elif user_wants_ai and not os.environ.get("EMERGENT_LLM_KEY"):
         log.warning("EMERGENT_LLM_KEY missing — AI stages will be skipped")
     escalate = not args.no_escalate
+
+    # Inject proxy auth if provided separately
+    proxy = args.proxy
+    if proxy and args.proxy_auth:
+        # Convert proxy://host:port → proxy://user:pass@host:port
+        from urllib.parse import urlparse, urlunparse
+        u = urlparse(proxy)
+        netloc = f"{args.proxy_auth}@{u.hostname}:{u.port}" if u.port \
+                 else f"{args.proxy_auth}@{u.hostname}"
+        proxy = urlunparse((u.scheme, netloc, u.path or "", "", "", ""))
 
     opts = ScanOptions(
         target_url=args.target.rstrip("/"),
@@ -207,7 +253,7 @@ async def _main_async(args) -> int:
         insecure_ssl=args.insecure,
         bypass_403=not args.no_bypass_403,
         ua_rotate=args.rotate_ua,
-        proxy=args.proxy,
+        proxy=proxy,
         proxy_list=proxies,
         rate_limit=args.rate_limit,
         concurrency=args.concurrency,
