@@ -191,6 +191,8 @@ async def _main_async(args) -> int:
     ai_enabled = not args.no_ai and bool(os.environ.get("EMERGENT_LLM_KEY"))
     if args.no_ai:
         log.info("AI disabled (--no-ai): running mechanical-only")
+        # Hide the key from ALL downstream code (escalation reads env directly)
+        os.environ.pop("EMERGENT_LLM_KEY", None)
     elif not os.environ.get("EMERGENT_LLM_KEY"):
         log.warning("EMERGENT_LLM_KEY missing — AI stages will be skipped")
     escalate = not args.no_escalate
@@ -313,7 +315,42 @@ async def _main_async(args) -> int:
             border_style="magenta",
         ))
 
+    # ------------------------------ LOOT SUMMARY (highest-value artifacts)
+    recovered_dir = opts.output_dir / "recovered_source"
+    if recovered_dir.exists():
+        recovered_files = sorted(p for p in recovered_dir.rglob("*") if p.is_file())
+        if recovered_files:
+            console.print()
+            lt = Table(
+                title=f"[bold green]LOOT — Recovered files ({len(recovered_files)})[/bold green]",
+                title_style="bold green",
+                show_lines=False,
+            )
+            lt.add_column("Path", style="white")
+            lt.add_column("Size", justify="right", style="cyan")
+            lt.add_column("Type", style="yellow")
+            high_value_extensions = {".pem", ".key", ".pfx", ".p12",
+                                     ".env", ".ini", ".conf", ".php",
+                                     ".sql", ".js", ".py", ".rb", ".go",
+                                     ".java", ".cs", ".sh"}
+            for p in recovered_files:
+                rel = p.relative_to(recovered_dir)
+                size = p.stat().st_size
+                # Detect interesting content
+                tag = ""
+                if p.suffix.lower() in (".pem", ".key"):
+                    tag = "[bold red]PRIVATE KEY[/bold red]"
+                elif p.suffix.lower() == ".php" and b"password" in p.read_bytes()[:8192].lower():
+                    tag = "[red]password ref[/red]"
+                elif p.suffix.lower() in high_value_extensions:
+                    tag = "source"
+                else:
+                    tag = "asset"
+                lt.add_row(str(rel), f"{size}B", tag)
+            console.print(lt)
+
     console.print(f"\n[bold]Report saved:[/bold] {opts.output_dir}/gitvulture-report.json")
+    console.print(f"[bold]Recovered source:[/bold] {opts.output_dir}/recovered_source/")
     if args.json:
         console.print_json(json.dumps(result.to_dict(), default=str))
     log.close()

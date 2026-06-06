@@ -356,15 +356,23 @@ class EscalationEngine:
         ssh_m = re.match(r"git@([^:]+):(.+?)(\.git)?$", remote_url)
         if ssh_m:
             host, repo = ssh_m.group(1), ssh_m.group(2)
+            if repo.endswith(".git"):
+                repo = repo[:-4]
             https_url = f"https://{host}/{repo}"
         elif remote_url.startswith("http"):
-            https_url = remote_url.rstrip(".git").rstrip("/")
+            # NOTE: bare rstrip(".git") removes individual chars, not the suffix
+            cleaned = remote_url
+            if cleaned.endswith(".git"):
+                cleaned = cleaned[:-4]
+            https_url = cleaned.rstrip("/")
         else:
             stage.notes.append(f"unsupported remote: {remote_url}")
             return
 
         stage.artifacts["remote_url"] = remote_url
         stage.artifacts["https_candidate"] = https_url
+        self.elog.success(f"upstream repo identified: {remote_url}")
+        self.elog.success(f"upstream HTTPS URL:       {https_url}")
 
         # Probe public availability via raw HTTPS GET on the repo landing page
         r = await self.client._request(https_url)
@@ -372,15 +380,22 @@ class EscalationEngine:
         stage.probes.append(Probe(method="GET", url=https_url, status=r.status,
                                    size=len(r.content),
                                    note="upstream landing"))
+        if public:
+            self.elog.success(f"upstream repo is PUBLIC  →  {https_url}")
+        else:
+            self.elog.warning(f"upstream repo NOT public ({r.status}) — pivoting to org enum")
 
         # Also probe a couple of "predictable" public-info endpoints
         probes_extra = []
         if "github.com" in https_url:
             owner_repo = https_url.split("github.com/")[-1]
+            owner = owner_repo.split("/")[0]
             for p in [
                 f"https://api.github.com/repos/{owner_repo}",
+                f"https://api.github.com/orgs/{owner}/repos?per_page=100",
+                f"https://api.github.com/users/{owner}/repos?per_page=100",
                 f"https://web.archive.org/web/2025*/{https_url}",
-                f"https://github.com/{owner_repo.split('/')[0]}",
+                f"https://github.com/{owner}",
             ]:
                 probes_extra.append(p)
         for u in probes_extra:
@@ -388,8 +403,25 @@ class EscalationEngine:
             stage.probes.append(Probe(method="GET", url=u, status=r.status, size=len(r.content),
                                        note="upstream metadata"))
             if r.ok:
+                self.elog.success(f"upstream metadata reachable  →  {u}  ({len(r.content)}B)")
                 try:
                     text = r.content[:4096].decode("utf-8", errors="replace")
+                    # If this is the GitHub API repo list, extract repo names
+                    if "api.github.com" in u and "/repos" in u:
+                        import json as _json
+                        try:
+                            repos = _json.loads(r.content.decode("utf-8", "replace"))
+                            if isinstance(repos, list):
+                                names = [x.get("full_name") for x in repos
+                                         if isinstance(x, dict)]
+                                stage.artifacts["sibling_repos"] = names
+                                for n in names[:10]:
+                                    self.elog.info(f"  sibling repo  →  {n}")
+                                report.discovered_endpoints.extend(
+                                    f"https://github.com/{n}" for n in names
+                                )
+                        except Exception:
+                            pass
                     stage.findings.extend(scan_text(text, file_path=u,
                                                     source="escalation-L2"))
                 except Exception:
@@ -437,6 +469,7 @@ class EscalationEngine:
         # Hard cap
         endpoint_candidates = set(list(endpoint_candidates)[:120])
         stage.artifacts["endpoint_candidates"] = sorted(endpoint_candidates)
+        self.elog.info(f"synthesized {len(endpoint_candidates)} endpoint candidates from index")
 
         async def probe(path: str):
             url = f"{self.target}{path}"
@@ -444,12 +477,15 @@ class EscalationEngine:
             p = Probe(method="GET", url=url, status=r.status, size=len(r.content))
             stage.probes.append(p)
             if r.ok and len(r.content) > 32:
+                self.elog.success(f"endpoint LIVE  {r.status}  {url}  ({len(r.content)}B)")
                 try:
                     text = r.content[:6000].decode("utf-8", errors="replace")
                     stage.findings.extend(scan_text(text, file_path=url,
                                                     source="escalation-L3"))
                 except Exception:
                     pass
+            elif r.status in (401, 403):
+                self.elog.warning(f"endpoint GATED {r.status}  {url}")
 
         tasks = [probe(p) for p in endpoint_candidates]
         for i in range(0, len(tasks), 30):
@@ -466,6 +502,7 @@ class EscalationEngine:
             stage.probes.append(p)
             if r.ok and len(r.content) > 0:
                 stage.notes.append(f"HIT {url} ({len(r.content)} bytes)")
+                self.elog.success(f"hidden path  {r.status}  {url}  ({len(r.content)}B)")
                 try:
                     text = r.content[:8000].decode("utf-8", errors="replace")
                     stage.findings.extend(scan_text(text, file_path=url,
@@ -510,6 +547,11 @@ class EscalationEngine:
                         "framework_hints": framework_hints,
                     })
                     stage.notes.append(f"login form @ {url}")
+                    self.elog.success(
+                        f"login form discovered  →  {url}  "
+                        f"(framework: {', '.join(framework_hints) or '?'}"
+                        f"{', CSRF token' if csrf else ''})"
+                    )
 
         stage.artifacts["login_pages"] = found_login
 
@@ -849,12 +891,18 @@ class EscalationEngine:
                             private_keys.append(p)
                     except Exception:
                         pass
-        # Candidate endpoints
+        # Candidate endpoints — ONLY on the actual target, never upstream URLs
+        # (probing JWT bypass against github.com is meaningless and produces
+        # false-positive 'accepted' verdicts).
+        target_host = self.target.replace("https://", "").replace("http://", "").split("/")[0]
         endpoints: list[str] = []
         for st in report.stages:
             for p in st.probes:
-                if 200 <= p.status < 300 and p.size > 0:
-                    endpoints.append(p.url)
+                if not (200 <= p.status < 300 and p.size > 0):
+                    continue
+                if target_host not in p.url:
+                    continue
+                endpoints.append(p.url)
         for known in ("/", "/login.php", "/index.php", "/admin",
                        "/api/", "/api/index.php", "/newlicense.php",
                        "/viewlicenses.php"):

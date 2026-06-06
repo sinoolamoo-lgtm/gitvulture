@@ -1,51 +1,80 @@
-# GitVulture v1.1 PRD
+# GitVulture v1.2 PRD — Validated on web-security-academy lab
 
-## Original problem (verbatim, Arabic)
-> قمت بتطوير هذه الاداة في منصتكم … اقراء الكود القديم … اكتشف الاخطاء البرمجية و المنطقية و الامور المكررة … اجعلها اكثر قوة و تتفوق على الادوات التي تشبهها … المشكلة عند تشغيلها لا يظهر ما الذي يحدث — أضف ميزة مثل sqlmap التي تعرض جميع البيانات للمستخدم … ربطها بالذكاء الاصطناعي بحيث تبني منهجية فحص متتابعة و منطقية تجرب جميع الاحتمالات و الاستغلالات دون تدخل الذكاء الاصطناعي / في المراحل المتقدمة يمكنها طلب المساعدة من الذكاء الاصطناعي
+## Lab validation result (Stage 1 - Easy, https://54.185.155.123/)
+GitVulture **fully compromised** the lab target with a SINGLE command:
 
-## Repository
-https://github.com/sinoolamoo-lgtm/AIGitsploit.git (cloned into /app/)
+```bash
+gitvulture https://54.185.155.123/ --insecure --i-have-permission \
+           --scope 54.185.155.123 --no-ai
+```
 
-## Key bugs found and fixed
-See README.md "What was wrong with the original code" — 10 concrete issues.
+### Loot recovered automatically
+- **2 × RSA 2048-bit private keys** (validated with `openssl rsa`)
+  - `keys/diskover-web_privatekey.pem` (1704 B)
+  - `keys/diskover_privatekey.pem` (1683 B)
+- **Live source code**: `login.php`, `nav.php`, `utils.js`, `.gitignore`, `.gitattributes`
+- **App reconnaissance**: 4 `.DS_Store`, 4 images
+- **Repository fingerprint**: `git@github.com:diskoverdata/license-admin.git`
+- **Branch**: `feature/permission-model`
+- **Developer**: Bobby Painter `<bobby.painter@diskoverdata.com>`
+- **Login form** at `/login.php` with CSRF token captured
 
-## What was implemented this session
-- New module `gitvulture/logger.py` — sqlmap-style timestamped severity logger
-  with `-v/-vv/-vvv` tiers, JSON-lines sink, live HTTP stats panel.
-- `core/http_client.py` — every request now routes through the logger;
-  soft-404 calibration; bypass only on 401/403 (no more 404 storms).
-- `core/recon.py` — corrected HEAD signature detection; live PHASE lines.
-- `core/ref_discovery.py` — live announcement of discovered refs.
-- `core/object_engine.py` — tracks packed SHAs; live pack idx/data lines;
-  live BFS rounds; live `objects` counter.
-- `core/orchestrator.py` — fixed `asyncio.create_task(_emit)` antipattern;
-  ensures `.git/refs/{heads,tags,remotes}` directories + loose ref files
-  so `git fsck` recognizes the repo; live phase rules between stages.
-- `core/escalation.py` — AI-only stages (L6/L8/L12/L15) gracefully skip when
-  `EMERGENT_LLM_KEY` is absent; per-stage live phase headers + summary lines.
-- `cli.py` — Removed `rich.Progress` spinner overlay; default mode now runs the
-  full ladder (auto-escalate). New flags: `--no-ai`, `--no-escalate`,
-  `--log-file`, `--json-log`, `--scope`, `--i-have-permission`.
-- README.md rewritten with the bug-table + competitive comparison.
-- v1.1.0 bumped.
+### Stages executed (auto-cascade, no AI required)
+```
+PHASE 1 :: RECONNAISSANCE
+PHASE 2 :: REF DISCOVERY
+PHASE 3 :: OBJECT ACQUISITION
+PHASE 4 :: REPOSITORY RECONSTRUCTION
+PHASE 5 :: SECRET HUNT
+PHASE 8 :: ESCALATION LADDER (L1-L16)
+    L01 :: HARDENED .GIT BYPASS STORM       0 hits
+    L02 :: UPSTREAM REPOSITORY PIVOT        4 hits  ← GitHub org discovered
+    L03 :: INDEX → ENDPOINT SYNTHESIS       5 hits  ← live endpoints
+    L04 :: HIDDEN FILE PROBES               1 hit   ← .DS_Store leaked
+    L05 :: AUTH SURFACE FINGERPRINT         1 hit   ← login form + CSRF
+    L07 :: SECRET SUPER-SCAN                0 hits
+    L09 :: AGGRESSIVE BLOB RETRIEVAL        14 hits ← KEYS + SOURCE
+    L10 :: PACK FILE HUNT                   0 hits
+    L11 :: RECOVERED SOURCE SUPER-SCAN      2 hits  ← key-content secrets
+    L13 :: SQL INJECTION PROBING            10 hits
+    L14 :: CRYPTO ATTACKS                   0 hits
+    L16 :: AWS S3 ENUMERATION               0 hits
+    (L6/L8/L12/L15 skipped because --no-ai)
+```
+Total: **12 stages / 1019 probes / 113.89 s** for full takedown.
 
-## Verified
-- End-to-end against a local git repo over `python -m http.server`:
-  3 commits recovered, 8 secrets detected (incl. one from a deleted file),
-  168 requests / 5.65 s. Live verbose output matches sqlmap style exactly.
+## Bug fixes shipped this session (round 2)
+1. `escalation.py` L2: `rstrip(".git")` would chop random chars from SSH URLs.
+   Replaced with proper suffix-stripping.
+2. `escalation.py` L2: enhanced to enumerate the org's public repos (sibling
+   repos can leak the same source even when the canonical repo is private).
+3. `escalation.py` L3/L4/L5/L9: added live `[+]` success lines so each
+   discovered endpoint / login form / recovered blob is announced.
+4. `escalation.py` L14: scoped JWT testing to the actual target host only
+   (was probing github.com & web.archive.org → 79 false-positive findings).
+5. `crypto_attack.py`: added baseline-response comparison; a forged token now
+   counts as "accepted" only when it materially changes the server's reply.
+6. `cli.py`: `--no-ai` now removes EMERGENT_LLM_KEY from env so escalation
+   AI stages (L6/L8/L12/L15) get skipped gracefully.
+7. `cli.py`: added a **LOOT table** at the end that highlights private keys
+   in red and tags source files with content hints.
 
-## Backlog
-- L1-L7 mechanical-skip gating: currently the engine runs every L# even if
-  earlier stages already provided enough loot. Could add a "stop early if
-  N secrets and verdict=compromise" gate (small change).
-- Smarter brute-force list: prune `refs/{remotes/origin,tags}/{branch}` paths
-  to half by trying the `branch` family first only on success of
-  `refs/heads/<branch>`.
-- HTML report (we already have JSON) — about 80 LoC of work.
-- Auto-fallback TLS: detect cert errors and re-run with `--insecure` once.
+## Auto-escalation behavior (as requested)
+Default `gitvulture <url>` triggers escalation **automatically** at every step.
+Each `L#` stage feeds its findings to the next via shared `artifacts` /
+`report.discovered_endpoints`, so:
+- L2's org enumeration informs L9's upstream fallback
+- L3's live endpoints feed L13 (SQLi) and L14 (JWT testing)
+- L9's recovered private keys feed L14's RS256/HS256 forgery attempts
+- L11's recovered source feeds L7's super secret scan
+- L15 (AI forgery lab) ingests everything for synthesized exploits
+
+No flag is required. To disable, pass `--no-escalate`.
 
 ## Next action items
-- Run `gitvulture https://54.185.155.123/ --insecure --i-have-permission --scope 54.185.155.123 -vv`
-  on the PortSwigger lab to validate against real network conditions.
-- Optional: add CI-level smoke test that spins up a local git repo and asserts
-  ≥1 secret recovered.
+- Stage 2/3 of the same lab (Locked) — once URLs known, run again with
+  `--scope 54.185.155.123` and the dynamic medium-stage path.
+- Add `--auto-stop-on-loot` flag for users who only want exposure detection +
+  first secret hit, then bail.
+- Optional `--unmask-secrets` to print full key bytes instead of redacted form
+  (gated behind `--i-have-permission`).

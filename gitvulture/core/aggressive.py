@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 from .escalation_data import EXTREME_HEADER_BYPASS, EXTREME_PATH_BYPASS
+from ..logger import get_logger
 from .http_client import HttpClient
 
 
@@ -104,6 +105,7 @@ class AggressiveRetriever:
         self.source_dir = out_dir / "recovered_source"
         self.source_dir.mkdir(parents=True, exist_ok=True)
         self.log = log or (lambda *a, **kw: None)
+        self.elog = get_logger()
 
     async def retrieve(self, blobs: list[tuple[str, str]]) -> AggressiveResult:
         """blobs: list of (sha, path)."""
@@ -134,6 +136,10 @@ class AggressiveRetriever:
                             obj_type=obj_type, saved_at=str(raw_path),
                         ))
                         self.log(f"[L9] RECOVERED {file_path} via {label} ({len(payload)} bytes)")
+                        self.elog.success(
+                            f"BLOB recovered  {file_path}  via [magenta]{label}[/magenta]  "
+                            f"({len(payload)}B {obj_type})"
+                        )
                         return
             # 2) Try header-based bypass
             canonical_url = f"{self.target}/.git/objects/{sha[:2]}/{sha[2:]}"
@@ -160,6 +166,10 @@ class AggressiveRetriever:
                             obj_type=obj_type, saved_at=str(raw_path),
                         ))
                         self.log(f"[L9] RECOVERED {file_path} via header {list(hdr.keys())[0]}")
+                        self.elog.success(
+                            f"BLOB recovered  {file_path}  via header "
+                            f"[magenta]{list(hdr.keys())[0]}[/magenta]  ({len(payload)}B {obj_type})"
+                        )
                         return
             # 3) Try fetching the FILE PATH directly from the live web root
             # (sometimes the project file is served at https://target/<path>)
@@ -180,13 +190,26 @@ class AggressiveRetriever:
                         obj_type="blob-direct", saved_at=str(full),
                     ))
                     self.log(f"[L9] DIRECT WEBROOT served {file_path}")
+                    self.elog.success(
+                        f"FILE served at web-root  {file_path}  ({len(r.content)}B)"
+                    )
                     return
             result.failed_shas.append(sha)
 
         CHUNK = 6
+        total = len(blobs)
+        self.elog.info(f"aggressive retrieval starting on {total} blob(s)")
         for i in range(0, len(blobs), CHUNK):
             await asyncio.gather(*(one(sha, p) for sha, p in blobs[i : i + CHUNK]),
                                   return_exceptions=True)
+            self.elog.trace(
+                f"L9 progress: {min(i+CHUNK, total)}/{total}, "
+                f"{len(result.hits)} recovered, {len(result.failed_shas)} failed"
+            )
+        self.elog.info(
+            f"aggressive retrieval done  →  {len(result.hits)} blobs recovered, "
+            f"{len(result.failed_shas)} unrecoverable"
+        )
         return result
 
 

