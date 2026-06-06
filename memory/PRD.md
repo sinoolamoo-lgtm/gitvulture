@@ -77,3 +77,38 @@
   and executes its `ready_commands` automatically inside `--scope`
 - Add WebDAV (PROPFIND/MKCOL) probes to the standard ladder
 - Surface bypass_library tricks into the http_client's bypass chain
+
+---
+
+## v1.4.1 — Strict-Mode Summary Verification (post-validation hotfix)
+
+### Issue caught during live testing on lab
+After v1.4 strict-mode shipped, the live run against
+`https://54.185.155.123/` showed:
+- Verifier correctly flagged Scenario #2's bad citation
+  `escalation.hit_count_per_stage["SQL Injection Probing"]` → downgraded
+- Scenario #1 (13 valid citations) preserved at `confidence=high` ✓
+- BUT the prose `summary` still mentioned `forge_diskover_jwt.py`
+  (a file that was NEVER recovered — it was a v1.3 hallucination
+  the model "remembered" from session continuity)
+
+### Fix shipped
+1. **`_scan_summary_for_hallucinations()`** — extracts every `*.py/php/js/sh/sql/env`
+   token from the prose summary and compares against the bundle inventory
+   (recovered_files + index_entries + secrets + live endpoints)
+2. **Inline marking**: suspicious tokens are wrapped as
+   `[HALLUCINATED:forge_diskover_jwt.py]` directly in the summary so the
+   operator can see them in the terminal
+3. **`index_entries` added to bundle** so the AI can cite legit path names
+   like `newlicense.php` that were observed in `.git/index` but not yet
+   recovered as source
+
+### Unit tested
+```
+Suspicious tokens caught: ['forge_diskover_jwt.py', 'evil_backdoor.sh']
+[+] All assertions PASSED:
+  - forge_diskover_jwt.py  → flagged
+  - evil_backdoor.sh        → flagged
+  - login.php               → NOT flagged (in recovered_files)
+  - viewlicenses.php        → NOT flagged (in index_entries)
+```
