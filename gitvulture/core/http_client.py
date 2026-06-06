@@ -91,6 +91,8 @@ class HttpClient:
         ua_rotate: bool = False,
         bypass_403: bool = False,
         verbose_log=None,
+        default_headers: Optional[dict] = None,
+        auth: Optional[tuple[str, str]] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -98,6 +100,8 @@ class HttpClient:
         self.insecure = insecure
         self.bypass_403 = bypass_403
         self.ua_rotate = ua_rotate
+        self.default_headers = default_headers or {}
+        self.auth = auth
         self._semaphore = asyncio.Semaphore(concurrency)
         self._limiter = RateLimiter(rate_limit)
         self._log = verbose_log or (lambda *a, **kw: None)
@@ -208,8 +212,15 @@ class HttpClient:
             "Accept": "*/*",
             "Accept-Encoding": "identity",  # avoid gzip surprises on binary objects
         }
+        if self.default_headers:
+            headers.update(self.default_headers)
         if extra_headers:
             headers.update(extra_headers)
+        # Inline HTTP Basic Auth (if configured)
+        if self.auth and "Authorization" not in headers:
+            import base64
+            tok = base64.b64encode(f"{self.auth[0]}:{self.auth[1]}".encode()).decode()
+            headers["Authorization"] = f"Basic {tok}"
 
         backoff = 0.5
         last_err: Optional[str] = None

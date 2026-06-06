@@ -114,6 +114,11 @@ def parse_args(argv=None):
                    help="Ignore SSL cert errors (hostname mismatch, self-signed)")
     p.add_argument("--rotate-ua", action="store_true",
                    help="Rotate User-Agent on every request")
+    p.add_argument("--user-agent", help="Override default User-Agent header")
+    p.add_argument("-H", "--header", action="append", default=[],
+                   help="Custom header `Name: value` (repeatable)")
+    p.add_argument("--cookies", help="Cookie header value (`a=1; b=2`)")
+    p.add_argument("--auth", help="HTTP Basic auth on target: user:pass")
     p.add_argument("--proxy", help="Single proxy URL (HTTP/SOCKS)")
     p.add_argument("--proxy-list", help="File with one proxy URL per line")
     p.add_argument("--rate-limit", type=float, default=30.0,
@@ -245,6 +250,18 @@ async def _main_async(args) -> int:
                  else f"{args.proxy_auth}@{u.hostname}"
         proxy = urlunparse((u.scheme, netloc, u.path or "", "", "", ""))
 
+    # Parse -H headers into dict
+    extra_headers: dict = {}
+    for h in (args.header or []):
+        if ":" in h:
+            k, _, v = h.partition(":")
+            extra_headers[k.strip()] = v.strip()
+
+    auth_tuple = None
+    if args.auth and ":" in args.auth:
+        u, _, pw = args.auth.partition(":")
+        auth_tuple = (u, pw)
+
     opts = ScanOptions(
         target_url=args.target.rstrip("/"),
         output_dir=out_dir,
@@ -262,6 +279,10 @@ async def _main_async(args) -> int:
         offensive=args.offensive,
         s3_hints=args.s3_bucket,
         exploit_roadmap=args.exploit_roadmap and ai_enabled,
+        extra_headers=extra_headers,
+        cookies=args.cookies,
+        user_agent=args.user_agent,
+        auth=auth_tuple,
     )
 
     log.kv("target", opts.target_url)

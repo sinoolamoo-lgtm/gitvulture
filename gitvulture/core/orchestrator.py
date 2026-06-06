@@ -60,6 +60,10 @@ class ScanOptions:
     offensive: bool = False
     s3_hints: list[str] = field(default_factory=list)
     exploit_roadmap: bool = False
+    extra_headers: dict = field(default_factory=dict)
+    cookies: Optional[str] = None
+    user_agent: Optional[str] = None
+    auth: Optional[tuple[str, str]] = None
 
 
 @dataclass
@@ -144,6 +148,13 @@ async def run_scan(
         # also surface as trace in the live stream
         log.trace(msg)
 
+    # Compose default headers from the various CLI inputs
+    default_headers = dict(opts.extra_headers or {})
+    if opts.user_agent:
+        default_headers["User-Agent"] = opts.user_agent
+    if opts.cookies:
+        default_headers["Cookie"] = opts.cookies
+
     client = HttpClient(
         base_url=opts.target_url,
         timeout=opts.timeout,
@@ -155,6 +166,8 @@ async def run_scan(
         ua_rotate=opts.ua_rotate,
         bypass_403=opts.bypass_403,
         verbose_log=_log,
+        default_headers=default_headers,
+        auth=opts.auth,
     )
     result = ScanResult(target_url=opts.target_url, output_dir=str(opts.output_dir),
                         started_at=started)
