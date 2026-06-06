@@ -20,6 +20,7 @@ from ..logger import get_logger
 from ..secrets.git_walker import walk_repository
 from ..secrets.patterns import Finding
 from ..secrets.verifier import verify_findings
+from ..secrets.exporter import export_secrets
 from .escalation import EscalationEngine
 from .http_client import HttpClient
 from .index_parser import IndexEntry, parse_index
@@ -86,6 +87,7 @@ class ScanResult:
     waf: Optional[str] = None
     errors: list[str] = field(default_factory=list)
     phase: str = "init"
+    secrets_dir: Optional[str] = None
 
     def to_dict(self) -> dict:
         def _conv(o):
@@ -352,6 +354,19 @@ async def run_scan(
             log.secret_hit(f.rule_id, f.file_path, f.redacted, f.severity)
         if not findings:
             log.info("no secrets detected in commit history")
+        # --- Always export a dedicated secrets/ folder, even when empty.
+        # This guarantees the user has one obvious place to look.
+        try:
+            sec_dir = export_secrets(
+                opts.output_dir, findings, opts.output_dir / "recovered_source"
+            )
+            if findings:
+                log.success(f"secrets exported to  {sec_dir}/")
+            else:
+                log.info(f"secrets/ folder created (empty) at  {sec_dir}/")
+            result.secrets_dir = str(sec_dir)
+        except Exception as e:
+            log.warn(f"could not write secrets folder: {e}")
         await _emit(progress, {
             "type": "phase", "phase": "secret_hunt", "status": "done",
             "data": {"findings": len(findings)}

@@ -565,6 +565,22 @@ async def _main_async(args) -> int:
 
     console.print(f"\n[bold]Report saved:[/bold] {opts.output_dir}/gitvulture-report.json")
     console.print(f"[bold]Recovered source:[/bold] {opts.output_dir}/recovered_source/")
+    if result.secrets_dir:
+        n = len(result.findings or [])
+        if n:
+            console.print(
+                f"[bold red]🔑  Secrets ({n}) saved to:[/bold red] {result.secrets_dir}/"
+            )
+            console.print(
+                f"    └─ open  [cyan]{result.secrets_dir}/secrets.md[/cyan]   for the human report"
+            )
+            console.print(
+                f"    └─ files [cyan]{result.secrets_dir}/files/[/cyan]       verbatim copies of .env / .pem / etc."
+            )
+        else:
+            console.print(
+                f"[bold]Secrets folder:[/bold] {result.secrets_dir}/ [bright_black](empty — no findings)[/bright_black]"
+            )
     if args.json:
         console.print_json(json.dumps(result.to_dict(), default=str))
     log.close()
