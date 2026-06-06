@@ -150,9 +150,7 @@ set "LAUNCHER=%USERPROFILE%\gitvulture.bat"
 > "%LAUNCHER%" echo @echo off
 >>"%LAUNCHER%" echo REM GitVulture launcher - loads config.env then invokes the venv'd CLI
 >>"%LAUNCHER%" echo if exist "%LLM_ENV_FILE%" ^(
->>"%LAUNCHER%" echo     for /f "usebackq tokens=1,* delims==" %%%%A in ("%LLM_ENV_FILE%"^) do ^(
->>"%LAUNCHER%" echo         if not "%%%%A"=="" if not "%%%%A:~0,1%%%%"=="#" set "%%%%A=%%%%B"
->>"%LAUNCHER%" echo     ^)
+>>"%LAUNCHER%" echo     for /f "usebackq tokens=2 delims==" %%%%A in ^(`findstr /b /c:"EMERGENT_LLM_KEY=" "%LLM_ENV_FILE%"`^) do set "EMERGENT_LLM_KEY=%%%%A"
 >>"%LAUNCHER%" echo ^)
 >>"%LAUNCHER%" echo call "%VENV_DIR%\Scripts\activate.bat"
 >>"%LAUNCHER%" echo gitvulture %%*

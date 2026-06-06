@@ -25,7 +25,27 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 gitvulture --help
 ```
 
-Both installers:
+Or double-click **`install.bat`** (CMD edition). It auto-installs Python 3.12
+and Git via `winget`, clones the repo into `%USERPROFILE%\gitvulture`, writes
+the LLM key to `%USERPROFILE%\.gitvulture\config.env`, and drops a launcher
+on your `PATH` (`%USERPROFILE%\AppData\Local\Microsoft\WindowsApps\gitvulture.bat`).
+
+### Docker — zero-install, fully isolated
+```bash
+docker build -t gitvulture .
+# show help
+docker run --rm -it gitvulture --help
+# real run (persist output to ./output on the host)
+docker run --rm -it \
+    -e EMERGENT_LLM_KEY=$EMERGENT_LLM_KEY \
+    -v "$PWD/output:/root/.gitvulture/output" \
+    gitvulture https://target.example.com --ai --escalate -vv --insecure
+```
+The container uses Python 3.12-slim + git, installs `emergentintegrations`
+from Emergent's index, and exposes `/root/.gitvulture` as a volume so loot
+survives container removal.
+
+Both installers (Linux/macOS/Windows):
 - create a virtualenv at `~/.gitvulture/venv`
 - write `~/.gitvulture/config.env` containing your `EMERGENT_LLM_KEY`
   (pre-filled with the bundled universal key — you can paste your own)

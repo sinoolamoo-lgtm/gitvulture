@@ -1,0 +1,16 @@
+# Exclude bulky / runtime-only paths from docker build context
+.git
+.venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+node_modules
+backend
+frontend
+test_reports
+memory
+gitvulture.egg-info
+*.egg-info
+output
+.gitvulture
+**/.DS_Store
