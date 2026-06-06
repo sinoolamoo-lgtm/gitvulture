@@ -84,6 +84,10 @@ def parse_args(argv=None):
                    help="Only critical/error/success/phase lines")
     p.add_argument("--no-color", action="store_true",
                    help="Disable colored output")
+    p.add_argument("--plain", action="store_true",
+                   help="Force PLAIN print() output (no rich, no ANSI, no panels). "
+                        "Use this if the tool looks frozen or prints garbage. "
+                        "Works on every terminal that ever existed.")
     p.add_argument("--log-file", help="Write full plain-text log to file")
     p.add_argument("--json-log", help="Write structured JSON-lines log to file")
 
@@ -205,8 +209,28 @@ async def _main_async(args) -> int:
     if args.doctor:
         return _run_doctor()
 
-    console = Console(no_color=args.no_color)
-    console.print(Panel.fit(BANNER, border_style="bright_green"))
+    # Promote to plain mode automatically if env var GITVULTURE_PLAIN=1
+    plain_mode = args.plain or bool(os.environ.get("GITVULTURE_PLAIN"))
+
+    if plain_mode:
+        # Bare ASCII banner — no rich, no ANSI, works everywhere.
+        for line in BANNER.splitlines():
+            print(line, flush=True)
+        print(flush=True)
+        # Tiny shim so the rest of _main_async (which uses console.print)
+        # still works without branching everywhere.
+        class _PlainConsole:
+            def print(self, *a, **kw):
+                import re
+                msg = " ".join(str(x) for x in a) if a else ""
+                msg = re.sub(r"\[/?[a-zA-Z0-9_# ]+\]", "", msg)
+                print(msg, flush=True)
+            def print_json(self, s, **kw):
+                print(s, flush=True)
+        console = _PlainConsole()
+    else:
+        console = Console(no_color=args.no_color)
+        console.print(Panel.fit(BANNER, border_style="bright_green"))
 
     # ------------------------------ utility: list targets
     if args.list_targets:
@@ -276,6 +300,7 @@ async def _main_async(args) -> int:
         no_color=args.no_color,
         log_file=Path(args.log_file) if args.log_file else None,
         json_log_file=Path(args.json_log) if args.json_log else None,
+        plain=plain_mode,
     )
 
     # ------------------------------ proxy list

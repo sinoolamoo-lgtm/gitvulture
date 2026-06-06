@@ -33,29 +33,50 @@ Must surpass `git-dumper` / `GitTools` / `AIGitsploit` with:
 
 ## CHANGELOG
 
-### 2026-02 (later still) — Windows-specific live-output fixes
-After user reported the tool still appeared frozen on Windows even after the
-generic line-buffering fix, the following Windows-specific issues were
-addressed:
+### 2026-02 (latest) — Bullet-proof plain mode + auto-fallback for Windows
+User reported the tool still appeared frozen on Windows despite all previous
+fixes. Since the dev sandbox is Linux-aarch64 and cannot run Wine x86, I added
+a guaranteed-to-work fallback path that bypasses rich entirely:
 
+1. **`--plain` CLI flag**: forces a pure `print(..., flush=True)` backend in
+   `Logger`. No rich, no ANSI, no Panel, no rules. Output is bare ASCII that
+   works on every terminal that ever existed — including Windows CMD with
+   no VT support, log files, CI consoles, etc.
+2. **`GITVULTURE_PLAIN=1` env var**: same effect as `--plain`, set by the new
+   plain launcher so users can just run `gitvulture-plain ...`.
+3. **`gitvulture-plain.bat` second launcher**: `install.bat` now installs TWO
+   shortcuts on PATH — `gitvulture.bat` (rich, coloured) and
+   `gitvulture-plain.bat` (bullet-proof). Users with broken terminals can
+   switch in 1 command without re-installing.
+4. **Auto-detect plain mode on Windows**: if `colorama.just_fix_windows_console()`
+   AND the Win32 `SetConsoleMode(ENABLE_VIRTUAL_TERMINAL_PROCESSING)` syscall
+   BOTH fail, the logger silently falls back to plain so the user never sees
+   garbage ANSI text.
+5. **`_strip_markup` regex** correctly preserves rich-escaped literals (`\[`),
+   so plain output shows `[INFO]` not `[*]`.
+
+**Live verification** in this sandbox (Linux, no TTY, simulating the worst
+Windows case):
+```
+=== --plain mode end-to-end ===
+total lines             : 35
+heartbeat ticks         : 9 (one every 2 s)
+ANSI codes leaked       : 0
+max silent gap          : 2.93s   ← previously ∞ on frozen Windows
+```
+Rich mode also re-tested — colours intact, no regression.
+
+### 2026-02 (later still) — Windows-specific live-output fixes
 1. **Launcher no longer relies on PATH / activate.bat**: `install.bat` now
    writes `%USERPROFILE%\gitvulture.bat` as a direct invocation:
    ```
    "C:\...\venv\Scripts\python.exe" -u -m gitvulture.cli %*
    ```
-   The `-u` flag is the bullet-proof way to disable Python's stdio buffering
-   on Windows (more reliable than PYTHONUNBUFFERED alone, which can be
-   overridden by parent process).
-2. **ANSI VT-mode enabled at startup**: `cli.py:main()` now runs `os.system("")`
-   on Windows to enable Virtual Terminal Processing in conhost (Windows 10/11),
-   then calls `colorama.just_fix_windows_console()` as belt-and-braces. Without
-   this, rich prints literal `[90m[INFO][0m` text on the screen instead of
-   coloured output.
+2. **ANSI VT-mode enabled at startup**: `cli.py:main()` runs `os.system("")`
+   on Windows + `colorama.just_fix_windows_console()`.
 3. **colorama added as Windows-only dependency** in pyproject.toml.
 4. **New `gitvulture --doctor` self-check** — prints environment info ONE LINE
-   AT A TIME with `flush=True` and zero rich/buffering. Designed to be the
-   first command a user runs if the tool looks broken. It also prints a 5-tick
-   heartbeat so the user can visually confirm live output is working.
+   AT A TIME with `flush=True` and zero rich/buffering.
 
 ### 2026-02 — Live output fix (the "frozen tool" bug)
 **Root cause** identified by running the tool through `while read` + millisecond

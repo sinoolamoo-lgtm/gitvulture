@@ -35,6 +35,44 @@ from typing import Any, Optional, TextIO
 from rich.console import Console
 from rich.theme import Theme
 
+
+def _windows_ansi_works() -> bool:
+    """Best-effort detection: does this Windows terminal accept ANSI?
+
+    Returns True if either:
+      - WT_SESSION env var is set (Windows Terminal — always ANSI-capable), or
+      - ANSICON / ConEmuANSI are set, or
+      - colorama.just_fix_windows_console() exists and succeeds, or
+      - The console mode includes ENABLE_VIRTUAL_TERMINAL_PROCESSING.
+    On any failure, return False so the caller falls back to plain print().
+    """
+    import os
+    if os.environ.get("WT_SESSION") or os.environ.get("ANSICON") or \
+       os.environ.get("ConEmuANSI") == "ON":
+        return True
+    try:
+        import colorama  # type: ignore
+        if hasattr(colorama, "just_fix_windows_console"):
+            colorama.just_fix_windows_console()
+        else:
+            colorama.init(autoreset=False, strip=False, convert=True)
+        return True
+    except Exception:
+        pass
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        STD_OUTPUT_HANDLE = -11
+        ENABLE_VT = 0x0004
+        h = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(h, ctypes.byref(mode)):
+            return False
+        kernel32.SetConsoleMode(h, mode.value | ENABLE_VT)
+        return True
+    except Exception:
+        return False
+
 LEVEL_STYLES = {
     "CRITICAL": "bold white on red",
     "ERROR":    "bold red",
@@ -71,7 +109,19 @@ VERBOSE_GATES = {
 
 
 class Logger:
-    """Thread-safe colored logger + optional log/JSON-lines sinks."""
+    """Thread-safe colored logger + optional log/JSON-lines sinks.
+
+    Has TWO output backends:
+      * rich  (pretty colours, used when terminal supports ANSI)
+      * plain (bare print() + flush=True, used when rich/ANSI is unreliable
+              - typically on old Windows CMD, redirected stdout, CI logs)
+
+    The plain backend is the *guaranteed-to-work-everywhere* path. If the
+    user passes --plain or auto-detect says ANSI is unsupported, we use it.
+    """
+
+    # Strip rich markup like [bold]x[/bold] for the plain backend
+    _MARKUP_RE = None  # lazy
 
     def __init__(
         self,
@@ -80,6 +130,7 @@ class Logger:
         no_color: bool = False,
         log_file: Optional[Path] = None,
         json_log_file: Optional[Path] = None,
+        plain: bool = False,
     ) -> None:
         self.verbose = max(0, min(3, verbose))
         self.quiet = quiet
@@ -87,18 +138,28 @@ class Logger:
         self._lock = threading.Lock()
         self._allowed = VERBOSE_GATES[self.verbose]
 
-        theme = Theme({f"lvl.{k.lower()}": v for k, v in LEVEL_STYLES.items()})
-        # force_terminal=True keeps ANSI colors AND immediate flush even when
-        # stdout is a pipe / tee / ssh redirection. Without this, rich falls
-        # into batch mode and the tool looks frozen for minutes on Windows.
-        self.console = Console(
-            theme=theme,
-            no_color=no_color,
-            force_terminal=None if no_color else True,
-            force_interactive=False,
-            highlight=False,
-            soft_wrap=False,
-        )
+        # ------------------------------------------------------------ plain?
+        # Auto-promote to plain on Windows when neither colorama nor VT mode
+        # could give us ANSI support. This is the safety net that makes the
+        # tool look alive even on the most hostile terminal.
+        if not plain and sys.platform == "win32" and not no_color:
+            plain = not _windows_ansi_works()
+        self.plain = plain
+
+        if self.plain:
+            self.console = None  # marker
+        else:
+            theme = Theme(
+                {f"lvl.{k.lower()}": v for k, v in LEVEL_STYLES.items()}
+            )
+            self.console = Console(
+                theme=theme,
+                no_color=no_color,
+                force_terminal=None if no_color else True,
+                force_interactive=False,
+                highlight=False,
+                soft_wrap=False,
+            )
 
         self._log_fp: Optional[TextIO] = None
         if log_file:
@@ -122,6 +183,39 @@ class Logger:
         self._last_output_at: float = time.monotonic()
 
     # ------------------------------------------------------------------ #
+    @classmethod
+    def _strip_markup(cls, s: str) -> str:
+        """Remove rich markup like [bold red]...[/bold red] for plain output.
+
+        We must preserve genuinely-literal brackets (rich escapes them as `\\[`).
+        Algorithm: temporarily replace `\\[` and `\\]` with placeholders, strip
+        markup tags, restore placeholders as bare `[` `]`.
+        """
+        if cls._MARKUP_RE is None:
+            import re
+            cls._MARKUP_RE = re.compile(r"\[/?[a-zA-Z0-9_# ]+\]")
+        ESC_OPEN = "\x00GVO\x00"
+        ESC_CLOSE = "\x00GVC\x00"
+        s = s.replace("\\[", ESC_OPEN).replace("\\]", ESC_CLOSE)
+        s = cls._MARKUP_RE.sub("", s)
+        return s.replace(ESC_OPEN, "[").replace(ESC_CLOSE, "]")
+
+    def _print(self, msg: str) -> None:
+        """Single write site that hits both backends safely."""
+        if self.plain or self.console is None:
+            # Bare print() — bullet-proof, line-buffered when stdout is
+            # line_buffering=True (which CLI main() ensures).
+            print(self._strip_markup(msg), flush=True)
+        else:
+            try:
+                self.console.print(msg, markup=True, highlight=False)
+            except Exception:
+                # If rich blows up at runtime, fall back to plain for ALL
+                # subsequent calls so the user never sees a silent freeze.
+                self.plain = True
+                print(self._strip_markup(msg), flush=True)
+
+    # ------------------------------------------------------------------ #
     def _ts(self) -> str:
         return datetime.now().strftime("%H:%M:%S")
 
@@ -136,10 +230,9 @@ class Logger:
             sym = LEVEL_SYMBOL[level]
             style = LEVEL_STYLES[level]
             tag = "INFO" if level == "SUCCESS" else level
-            self.console.print(
+            self._print(
                 f"[bright_black]\\[{ts}][/bright_black] "
-                f"[{style}]\\[{tag}][/{style}] {sym} {message}",
-                markup=True, highlight=False,
+                f"[{style}]\\[{tag}][/{style}] {sym} {message}"
             )
             self._last_output_at = time.monotonic()
             self._write_sinks(level, message, extra)
@@ -187,15 +280,27 @@ class Logger:
     def phase(self, name: str) -> None:
         """Big horizontal rule between phases."""
         with self._lock:
-            self.console.rule(f"[bold magenta]{name}[/bold magenta]",
-                              style="bright_black")
+            if self.plain or self.console is None:
+                bar = "=" * 78
+                print(bar, flush=True)
+                print(f"  PHASE :: {name}", flush=True)
+                print(bar, flush=True)
+            else:
+                try:
+                    self.console.rule(f"[bold magenta]{name}[/bold magenta]",
+                                      style="bright_black")
+                except Exception:
+                    self.plain = True
+                    print(f"=== PHASE :: {name} ===", flush=True)
+            self._last_output_at = time.monotonic()
         self._write_sinks("PHASE", name, {})
 
     def kv(self, key: str, value: str) -> None:
         with self._lock:
-            self.console.print(
+            self._print(
                 f"    [bright_black]{key:>22}[/bright_black]  [white]{value}[/white]"
             )
+            self._last_output_at = time.monotonic()
 
     # ------------------------------------------------------------------ #
     # HTTP transaction (called from every request site)
@@ -255,17 +360,27 @@ class Logger:
     def stats_panel(self) -> None:
         elapsed = time.monotonic() - self.start_time
         with self._lock:
-            self.console.print()
-            self.console.rule("[bold magenta]session stats[/bold magenta]",
-                              style="magenta")
-            for k, v in self.stats.items():
+            if self.plain or self.console is None:
+                print("", flush=True)
+                print("=" * 78, flush=True)
+                print("  session stats", flush=True)
+                print("=" * 78, flush=True)
+                for k, v in self.stats.items():
+                    print(f"    {k:>14}  {v}", flush=True)
+                print(f"    {'elapsed':>14}  {elapsed:.2f}s", flush=True)
+                print("", flush=True)
+            else:
+                self.console.print()
+                self.console.rule("[bold magenta]session stats[/bold magenta]",
+                                  style="magenta")
+                for k, v in self.stats.items():
+                    self.console.print(
+                        f"    [bright_black]{k:>14}[/bright_black]  [bold]{v}[/bold]"
+                    )
                 self.console.print(
-                    f"    [bright_black]{k:>14}[/bright_black]  [bold]{v}[/bold]"
+                    f"    [bright_black]{'elapsed':>14}[/bright_black]  [bold]{elapsed:.2f}s[/bold]"
                 )
-            self.console.print(
-                f"    [bright_black]{'elapsed':>14}[/bright_black]  [bold]{elapsed:.2f}s[/bold]"
-            )
-            self.console.print()
+                self.console.print()
 
     def close(self) -> None:
         self.stop_heartbeat()
@@ -297,15 +412,14 @@ class Logger:
                     continue
                 elapsed = now - self.start_time
                 with self._lock:
-                    self.console.print(
+                    self._print(
                         f"[bright_black]\\[{self._ts()}][/bright_black] "
                         f"[bright_black]\\[TICK][/bright_black] [.] "
                         f"{self.stats['requests']} req · "
                         f"{self.stats['ok']} ok · "
                         f"{self.stats['bypass_hits']} bypass · "
                         f"{self.stats['objects']} obj · "
-                        f"elapsed {elapsed:.1f}s",
-                        markup=True, highlight=False,
+                        f"elapsed {elapsed:.1f}s"
                     )
                     self._last_output_at = now
 

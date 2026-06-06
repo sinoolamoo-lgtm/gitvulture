@@ -161,11 +161,28 @@ set "LAUNCHER=%USERPROFILE%\gitvulture.bat"
 >>"%LAUNCHER%" echo endlocal ^& exit /b %%ERRORLEVEL%%
 echo [OK] Launcher created at %LAUNCHER%
 
+REM ---- bullet-proof "plain" launcher (no rich, no ANSI, works anywhere) ----
+set "PLAIN_LAUNCHER=%USERPROFILE%\gitvulture-plain.bat"
+> "%PLAIN_LAUNCHER%" echo @echo off
+>>"%PLAIN_LAUNCHER%" echo REM GitVulture PLAIN launcher - use this if the colored output looks frozen.
+>>"%PLAIN_LAUNCHER%" echo setlocal EnableExtensions
+>>"%PLAIN_LAUNCHER%" echo if exist "%LLM_ENV_FILE%" ^(
+>>"%PLAIN_LAUNCHER%" echo     for /f "usebackq tokens=2 delims==" %%%%A in ^(`findstr /b /c:"EMERGENT_LLM_KEY=" "%LLM_ENV_FILE%"`^) do set "EMERGENT_LLM_KEY=%%%%A"
+>>"%PLAIN_LAUNCHER%" echo ^)
+>>"%PLAIN_LAUNCHER%" echo set "PYTHONUNBUFFERED=1"
+>>"%PLAIN_LAUNCHER%" echo set "PYTHONIOENCODING=utf-8"
+>>"%PLAIN_LAUNCHER%" echo set "GITVULTURE_PLAIN=1"
+>>"%PLAIN_LAUNCHER%" echo "%VENV_DIR%\Scripts\python.exe" -u -m gitvulture.cli --plain %%*
+>>"%PLAIN_LAUNCHER%" echo endlocal ^& exit /b %%ERRORLEVEL%%
+echo [OK] Plain launcher created at %PLAIN_LAUNCHER%
+
 REM Optional: copy to a folder on PATH
 set "BIN_DIR=%USERPROFILE%\AppData\Local\Microsoft\WindowsApps"
 if exist "%BIN_DIR%\" (
     copy /Y "%LAUNCHER%" "%BIN_DIR%\gitvulture.bat" >nul 2>&1
+    copy /Y "%PLAIN_LAUNCHER%" "%BIN_DIR%\gitvulture-plain.bat" >nul 2>&1
     echo [OK] Also installed to %BIN_DIR%\gitvulture.bat (on your PATH)
+    echo [OK] And %BIN_DIR%\gitvulture-plain.bat (fallback for stubborn terminals)
 )
 
 REM ---- step 8: smoke test ----
@@ -191,11 +208,15 @@ echo                  INSTALLATION COMPLETE
 echo ===============================================================
 echo.
 echo Quick tests (open a NEW CMD/PowerShell window first):
+echo     gitvulture --doctor                  ^<-- RUN THIS FIRST to verify
 echo     gitvulture --help
-echo     gitvulture --list-targets
 echo     gitvulture --interactive
 echo     gitvulture https://my-lab.example.com --insecure --i-have-permission
 echo     gitvulture https://my-lab.example.com --ai --exploit-roadmap -vv
+echo.
+echo IF THE COLORED OUTPUT LOOKS FROZEN OR PRINTS GARBAGE:
+echo     gitvulture-plain --doctor            ^<-- bullet-proof fallback
+echo     gitvulture-plain https://my-lab.example.com --insecure --i-have-permission
 echo.
 echo Storage layout (sqlmap-style):
 echo     %%USERPROFILE%%\.gitvulture\output\HOST\TIMESTAMP\
