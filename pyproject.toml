@@ -13,6 +13,7 @@ dependencies = [
     "aiofiles>=23",
     "python-dotenv>=1.0",
     "emergentintegrations==0.2.0",
+    "colorama>=0.4.6 ; sys_platform == 'win32'",
 ]
 
 [project.scripts]

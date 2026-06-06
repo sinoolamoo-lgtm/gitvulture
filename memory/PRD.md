@@ -33,7 +33,31 @@ Must surpass `git-dumper` / `GitTools` / `AIGitsploit` with:
 
 ## CHANGELOG
 
-### 2026-02 (later) — Live output fix (the "frozen tool" bug)
+### 2026-02 (later still) — Windows-specific live-output fixes
+After user reported the tool still appeared frozen on Windows even after the
+generic line-buffering fix, the following Windows-specific issues were
+addressed:
+
+1. **Launcher no longer relies on PATH / activate.bat**: `install.bat` now
+   writes `%USERPROFILE%\gitvulture.bat` as a direct invocation:
+   ```
+   "C:\...\venv\Scripts\python.exe" -u -m gitvulture.cli %*
+   ```
+   The `-u` flag is the bullet-proof way to disable Python's stdio buffering
+   on Windows (more reliable than PYTHONUNBUFFERED alone, which can be
+   overridden by parent process).
+2. **ANSI VT-mode enabled at startup**: `cli.py:main()` now runs `os.system("")`
+   on Windows to enable Virtual Terminal Processing in conhost (Windows 10/11),
+   then calls `colorama.just_fix_windows_console()` as belt-and-braces. Without
+   this, rich prints literal `[90m[INFO][0m` text on the screen instead of
+   coloured output.
+3. **colorama added as Windows-only dependency** in pyproject.toml.
+4. **New `gitvulture --doctor` self-check** — prints environment info ONE LINE
+   AT A TIME with `flush=True` and zero rich/buffering. Designed to be the
+   first command a user runs if the tool looks broken. It also prints a 5-tick
+   heartbeat so the user can visually confirm live output is working.
+
+### 2026-02 — Live output fix (the "frozen tool" bug)
 **Root cause** identified by running the tool through `while read` + millisecond
 timestamps: on Windows / inside `tee` / over SSH, Python's stdout was
 **block-buffered** (8 KB), causing 30+ seconds of total silence between output
@@ -44,23 +68,9 @@ Fixes applied **and tested live** (httpbin.org target, 13 s scan, 203 lines):
   `sys.stdout.reconfigure(line_buffering=True)` before anything else.
 - `gitvulture/logger.py` :: `Console(force_terminal=True, force_interactive=False)`
   so ANSI + immediate flush survive pipes / tee.
-- `gitvulture/logger.py` :: new **heartbeat ticker** (`start_heartbeat`,
-  `stop_heartbeat`) — emits a `[TICK]` pulse every 2 s of silence with live
-  counters: `N req · N ok · N bypass · N obj · elapsed Ns`. Honors `--quiet`.
-- `gitvulture/cli.py` :: starts/stops heartbeat around `run_scan` in a
-  try/finally.
-- `install.bat`, `install.sh`, `install.ps1` launchers now export
-  `PYTHONUNBUFFERED=1`, `PYTHONIOENCODING=utf-8`, and call `python -u`.
-- `Dockerfile` adds `PYTHONIOENCODING=utf-8` and `FORCE_COLOR=1`.
-
-**Verification** (this session, on a real network target):
-```
-total lines      : 203
-max silent gap   : 2.807s   ← previously > 6 s with no signal
-line after gap   : [TICK] 102 req · 96 ok · 0 bypass · 0 obj · elapsed 8.0s
-```
-No more "frozen" experience. Pulse keeps user informed during brute-force,
-slow probes, AI calls, and TLS handshakes.
+- `gitvulture/logger.py` :: new **heartbeat ticker** — emits a `[TICK]` pulse
+  every 2 s of silence with live counters. Honours `--quiet`.
+- `gitvulture/cli.py` :: starts/stops heartbeat around `run_scan` in try/finally.
 
 ### 2026-02 — Windows installer hardening + Docker support
 - **install.bat (P0 bug)**: Replaced the broken FOR/substring config loader in

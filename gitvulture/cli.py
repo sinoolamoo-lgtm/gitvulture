@@ -138,10 +138,73 @@ def parse_args(argv=None):
                    help="Whitelist host/IP (abort if target host not listed)")
     p.add_argument("--i-have-permission", action="store_true",
                    help="Acknowledge you are authorized to test this target")
+    p.add_argument("--doctor", action="store_true",
+                   help="Print environment self-check (Python, OS, terminal, "
+                        "ANSI support, env vars) and exit. Use this first if "
+                        "the tool looks frozen or printed garbage.")
     return p.parse_args(argv)
 
 
+def _run_doctor() -> int:
+    """Environment self-check — prints ONE LINE AT A TIME so the user can
+    see immediately if stdout is alive. No rich, no buffering, no magic."""
+    import platform, time
+    print("=" * 60, flush=True)
+    print(" gitvulture --doctor  (live self-check)", flush=True)
+    print("=" * 60, flush=True)
+    checks = [
+        ("python",         lambda: sys.version.split()[0]),
+        ("executable",     lambda: sys.executable),
+        ("platform",       lambda: platform.platform()),
+        ("stdout TTY",     lambda: str(sys.stdout.isatty())),
+        ("stdout encoding", lambda: sys.stdout.encoding or "?"),
+        ("PYTHONUNBUFFERED", lambda: os.environ.get("PYTHONUNBUFFERED", "(not set)")),
+        ("PYTHONIOENCODING", lambda: os.environ.get("PYTHONIOENCODING", "(not set)")),
+        ("EMERGENT_LLM_KEY", lambda: "present" if os.environ.get("EMERGENT_LLM_KEY") else "MISSING"),
+        ("rich version",   lambda: __import__("importlib.metadata", fromlist=["version"]).version("rich")),
+    ]
+    if sys.platform == "win32":
+        checks.append(("colorama", lambda: __import__("colorama").__version__))
+        checks.append(("ANSI VT mode", lambda: "enabled (os.system(''))"))
+
+    for name, fn in checks:
+        try:
+            value = fn()
+        except Exception as e:
+            value = f"ERROR ({e!r})"
+        print(f"  {name:>20} : {value}", flush=True)
+        time.sleep(0.05)  # visual proof of live flushing
+
+    print("-" * 60, flush=True)
+    print(" colour test (you should see RED, GREEN, BLUE words below):",
+          flush=True)
+    print("   \033[31mRED\033[0m  \033[32mGREEN\033[0m  \033[34mBLUE\033[0m",
+          flush=True)
+    print(" If those words show as raw '[31mRED[0m' text, your terminal",
+          flush=True)
+    print(" does not support ANSI. Use --no-color or upgrade the terminal.",
+          flush=True)
+    print("-" * 60, flush=True)
+    print(" heartbeat test (1 dot per second for 5 seconds):", flush=True)
+    for i in range(5):
+        print(f"  tick {i+1}/5  t={i+1}s", flush=True)
+        time.sleep(1)
+    print("=" * 60, flush=True)
+    print(" Self-check complete. If you saw the dots appear one by one,",
+          flush=True)
+    print(" live output is working. Now try a real scan, e.g.:", flush=True)
+    print("   gitvulture https://target.tld --insecure --i-have-permission",
+          flush=True)
+    print("=" * 60, flush=True)
+    return 0
+
+
 async def _main_async(args) -> int:
+    # --doctor must run BEFORE rich init, so a broken rich install can't
+    # block the self-check itself.
+    if args.doctor:
+        return _run_doctor()
+
     console = Console(no_color=args.no_color)
     console.print(Panel.fit(BANNER, border_style="bright_green"))
 
@@ -496,6 +559,25 @@ def main():
         sys.stderr.reconfigure(line_buffering=True)   # type: ignore[attr-defined]
     except Exception:
         pass
+
+    # On Windows 10/11, ANSI escape sequences are disabled by default in
+    # conhost. We must explicitly enable Virtual Terminal Processing,
+    # otherwise rich prints raw `[90m[INFO][0m` literals on the screen.
+    if sys.platform == "win32":
+        # Trick: os.system("") initializes VT100 mode without running anything.
+        try:
+            os.system("")
+        except Exception:
+            pass
+        # colorama is the bullet-proof fallback for older / hosted shells.
+        try:
+            import colorama  # type: ignore
+            if hasattr(colorama, "just_fix_windows_console"):
+                colorama.just_fix_windows_console()
+            else:
+                colorama.init()
+        except Exception:
+            pass
 
     args = parse_args()
     try:

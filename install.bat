@@ -148,14 +148,17 @@ echo [OK] LLM key saved to %LLM_ENV_FILE%
 
 set "LAUNCHER=%USERPROFILE%\gitvulture.bat"
 > "%LAUNCHER%" echo @echo off
->>"%LAUNCHER%" echo REM GitVulture launcher - loads config.env then invokes the venv'd CLI
+>>"%LAUNCHER%" echo REM GitVulture launcher - calls the venv'd python -u directly
+>>"%LAUNCHER%" echo REM   -u  = unbuffered stdout/stderr (sqlmap-style live output)
+>>"%LAUNCHER%" echo setlocal EnableExtensions
 >>"%LAUNCHER%" echo if exist "%LLM_ENV_FILE%" ^(
 >>"%LAUNCHER%" echo     for /f "usebackq tokens=2 delims==" %%%%A in ^(`findstr /b /c:"EMERGENT_LLM_KEY=" "%LLM_ENV_FILE%"`^) do set "EMERGENT_LLM_KEY=%%%%A"
 >>"%LAUNCHER%" echo ^)
 >>"%LAUNCHER%" echo set "PYTHONUNBUFFERED=1"
 >>"%LAUNCHER%" echo set "PYTHONIOENCODING=utf-8"
->>"%LAUNCHER%" echo call "%VENV_DIR%\Scripts\activate.bat"
->>"%LAUNCHER%" echo gitvulture %%*
+>>"%LAUNCHER%" echo set "FORCE_COLOR=1"
+>>"%LAUNCHER%" echo "%VENV_DIR%\Scripts\python.exe" -u -m gitvulture.cli %%*
+>>"%LAUNCHER%" echo endlocal ^& exit /b %%ERRORLEVEL%%
 echo [OK] Launcher created at %LAUNCHER%
 
 REM Optional: copy to a folder on PATH
