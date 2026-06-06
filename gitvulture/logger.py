@@ -88,10 +88,14 @@ class Logger:
         self._allowed = VERBOSE_GATES[self.verbose]
 
         theme = Theme({f"lvl.{k.lower()}": v for k, v in LEVEL_STYLES.items()})
+        # force_terminal=True keeps ANSI colors AND immediate flush even when
+        # stdout is a pipe / tee / ssh redirection. Without this, rich falls
+        # into batch mode and the tool looks frozen for minutes on Windows.
         self.console = Console(
             theme=theme,
             no_color=no_color,
-            force_terminal=None,
+            force_terminal=None if no_color else True,
+            force_interactive=False,
             highlight=False,
             soft_wrap=False,
         )
@@ -111,6 +115,11 @@ class Logger:
             "errors": 0, "bypass_hits": 0, "bytes": 0,
             "objects": 0, "secrets": 0, "ai_calls": 0,
         }
+
+        # Heartbeat ticker (sqlmap-style "alive" pulse)
+        self._hb_stop: Optional[threading.Event] = None
+        self._hb_thread: Optional[threading.Thread] = None
+        self._last_output_at: float = time.monotonic()
 
     # ------------------------------------------------------------------ #
     def _ts(self) -> str:
@@ -132,6 +141,7 @@ class Logger:
                 f"[{style}]\\[{tag}][/{style}] {sym} {message}",
                 markup=True, highlight=False,
             )
+            self._last_output_at = time.monotonic()
             self._write_sinks(level, message, extra)
 
     def _write_sinks(self, level: str, message: str, extra: dict) -> None:
@@ -258,10 +268,57 @@ class Logger:
             self.console.print()
 
     def close(self) -> None:
+        self.stop_heartbeat()
         if self._log_fp:
             self._log_fp.close()
         if self._json_fp:
             self._json_fp.close()
+
+    # ------------------------------------------------------------------ #
+    # Heartbeat ticker — emits a "still alive" pulse whenever there has
+    # been silence for > `interval` seconds. This is what makes sqlmap's
+    # output feel responsive even during slow probes. Without it, users
+    # think the tool is frozen.
+    def start_heartbeat(self, interval: float = 2.0) -> None:
+        if self._hb_thread is not None:
+            return
+        self._hb_stop = threading.Event()
+        self._last_output_at = time.monotonic()
+
+        def _tick() -> None:
+            assert self._hb_stop is not None
+            while not self._hb_stop.wait(interval):
+                # Respect quiet mode — heartbeat is purely cosmetic
+                if self.quiet:
+                    continue
+                now = time.monotonic()
+                # Only beat if there was actual silence
+                if now - self._last_output_at < interval * 0.9:
+                    continue
+                elapsed = now - self.start_time
+                with self._lock:
+                    self.console.print(
+                        f"[bright_black]\\[{self._ts()}][/bright_black] "
+                        f"[bright_black]\\[TICK][/bright_black] [.] "
+                        f"{self.stats['requests']} req · "
+                        f"{self.stats['ok']} ok · "
+                        f"{self.stats['bypass_hits']} bypass · "
+                        f"{self.stats['objects']} obj · "
+                        f"elapsed {elapsed:.1f}s",
+                        markup=True, highlight=False,
+                    )
+                    self._last_output_at = now
+
+        self._hb_thread = threading.Thread(
+            target=_tick, name="gv-heartbeat", daemon=True
+        )
+        self._hb_thread.start()
+
+    def stop_heartbeat(self) -> None:
+        if self._hb_stop is not None:
+            self._hb_stop.set()
+        self._hb_thread = None
+        self._hb_stop = None
 
 
 # ---------------------------------------------------------------------- #

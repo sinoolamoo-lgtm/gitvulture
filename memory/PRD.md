@@ -33,6 +33,35 @@ Must surpass `git-dumper` / `GitTools` / `AIGitsploit` with:
 
 ## CHANGELOG
 
+### 2026-02 (later) — Live output fix (the "frozen tool" bug)
+**Root cause** identified by running the tool through `while read` + millisecond
+timestamps: on Windows / inside `tee` / over SSH, Python's stdout was
+**block-buffered** (8 KB), causing 30+ seconds of total silence between output
+chunks. The user saw a frozen banner and concluded the tool was hung.
+
+Fixes applied **and tested live** (httpbin.org target, 13 s scan, 203 lines):
+- `gitvulture/cli.py` :: `main()` now sets `PYTHONUNBUFFERED=1` and calls
+  `sys.stdout.reconfigure(line_buffering=True)` before anything else.
+- `gitvulture/logger.py` :: `Console(force_terminal=True, force_interactive=False)`
+  so ANSI + immediate flush survive pipes / tee.
+- `gitvulture/logger.py` :: new **heartbeat ticker** (`start_heartbeat`,
+  `stop_heartbeat`) — emits a `[TICK]` pulse every 2 s of silence with live
+  counters: `N req · N ok · N bypass · N obj · elapsed Ns`. Honors `--quiet`.
+- `gitvulture/cli.py` :: starts/stops heartbeat around `run_scan` in a
+  try/finally.
+- `install.bat`, `install.sh`, `install.ps1` launchers now export
+  `PYTHONUNBUFFERED=1`, `PYTHONIOENCODING=utf-8`, and call `python -u`.
+- `Dockerfile` adds `PYTHONIOENCODING=utf-8` and `FORCE_COLOR=1`.
+
+**Verification** (this session, on a real network target):
+```
+total lines      : 203
+max silent gap   : 2.807s   ← previously > 6 s with no signal
+line after gap   : [TICK] 102 req · 96 ok · 0 bypass · 0 obj · elapsed 8.0s
+```
+No more "frozen" experience. Pulse keeps user informed during brute-force,
+slow probes, AI calls, and TLS handshakes.
+
 ### 2026-02 — Windows installer hardening + Docker support
 - **install.bat (P0 bug)**: Replaced the broken FOR/substring config loader in
   the generated `%USERPROFILE%\gitvulture.bat` launcher with a simpler
@@ -42,10 +71,8 @@ Must surpass `git-dumper` / `GitTools` / `AIGitsploit` with:
 - **Dockerfile**: New `python:3.12-slim` image. Uses Emergent's extra index
   for `emergentintegrations==0.2.0`, installs `gitvulture` editable, exposes
   `/root/.gitvulture` as a volume for sqlmap-style output persistence.
-- **.dockerignore**: keeps the build context lean (no .git, no node_modules,
-  no test_reports).
-- **USAGE.md**: new "Docker — zero-install" section + mention of `install.bat`
-  inside the Windows install block.
+- **.dockerignore**: keeps the build context lean.
+- **USAGE.md**: new "Docker — zero-install" section + `install.bat` mention.
 
 ### (previous sessions, summarised)
 - v1.4 strict-mode AI roadmap with citation verification + Interactive TUI

@@ -295,7 +295,11 @@ async def _main_async(args) -> int:
 
     # ------------------------------ Run! NO Progress widget anymore — the live
     # logger emits its own sqlmap-style lines as the scan progresses.
-    result = await run_scan(opts)
+    log.start_heartbeat(interval=2.0)
+    try:
+        result = await run_scan(opts)
+    finally:
+        log.stop_heartbeat()
 
     log.stats_panel()
 
@@ -480,6 +484,19 @@ async def _main_async(args) -> int:
 
 
 def main():
+    # ------------------------------------------------------------------ #
+    # CRITICAL: defeat block-buffering of stdout/stderr.
+    # Without this, on Windows CMD / PowerShell / when piped through tee or
+    # ssh, the user sees a frozen screen for minutes while output piles up
+    # in an 8 KB kernel buffer. This is THE reason the tool looked "dead".
+    # ------------------------------------------------------------------ #
+    os.environ.setdefault("PYTHONUNBUFFERED", "1")
+    try:
+        sys.stdout.reconfigure(line_buffering=True)   # type: ignore[attr-defined]
+        sys.stderr.reconfigure(line_buffering=True)   # type: ignore[attr-defined]
+    except Exception:
+        pass
+
     args = parse_args()
     try:
         sys.exit(asyncio.run(_main_async(args)))

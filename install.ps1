@@ -88,11 +88,11 @@ $launcherContent = @"
 @echo off
 REM GitVulture launcher — loads config.env then invokes the venv'd CLI.
 if exist "$cfgFile" (
-    for /f "usebackq tokens=1,* delims==" %%A in ("$cfgFile") do (
-        if not "%%A"=="" if not "%%A:~0,1%"=="#" set "%%A=%%B"
-    )
+    for /f "usebackq tokens=2 delims==" %%A in (`findstr /b /c:"EMERGENT_LLM_KEY=" "$cfgFile"`) do set "EMERGENT_LLM_KEY=%%A"
 )
-"$pyExe" -m gitvulture.cli %*
+set "PYTHONUNBUFFERED=1"
+set "PYTHONIOENCODING=utf-8"
+"$pyExe" -u -m gitvulture.cli %*
 "@
 Set-Content -Path $launcher -Value $launcherContent -Encoding ASCII
 Ok "installed launcher at $launcher"

@@ -152,6 +152,8 @@ set "LAUNCHER=%USERPROFILE%\gitvulture.bat"
 >>"%LAUNCHER%" echo if exist "%LLM_ENV_FILE%" ^(
 >>"%LAUNCHER%" echo     for /f "usebackq tokens=2 delims==" %%%%A in ^(`findstr /b /c:"EMERGENT_LLM_KEY=" "%LLM_ENV_FILE%"`^) do set "EMERGENT_LLM_KEY=%%%%A"
 >>"%LAUNCHER%" echo ^)
+>>"%LAUNCHER%" echo set "PYTHONUNBUFFERED=1"
+>>"%LAUNCHER%" echo set "PYTHONIOENCODING=utf-8"
 >>"%LAUNCHER%" echo call "%VENV_DIR%\Scripts\activate.bat"
 >>"%LAUNCHER%" echo gitvulture %%*
 echo [OK] Launcher created at %LAUNCHER%

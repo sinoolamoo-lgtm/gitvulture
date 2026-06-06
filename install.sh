@@ -98,7 +98,11 @@ cat > "$GV_BIN/gitvulture" <<EOF
 set -a
 [ -f "$CFG_FILE" ] && . "$CFG_FILE"
 set +a
-exec "$GV_VENV/bin/python" -m gitvulture.cli "\$@"
+# Force line-buffered output so the user sees sqlmap-style live progress
+# even when piping through tee / less / ssh.
+export PYTHONUNBUFFERED=1
+export PYTHONIOENCODING=utf-8
+exec "$GV_VENV/bin/python" -u -m gitvulture.cli "\$@"
 EOF
 chmod +x "$GV_BIN/gitvulture"
 ok "installed launcher at $GV_BIN/gitvulture"
