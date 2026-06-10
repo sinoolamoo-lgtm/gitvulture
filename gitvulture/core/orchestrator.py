@@ -54,6 +54,7 @@ class ScanOptions:
     origin_discovery: bool = False
     git_pivots: bool = True
     jwt_forge: bool = True
+    cicd_secrets: bool = True
     cloud_enum: bool = False
     webdav: bool = False
     html_report: bool = True
@@ -107,6 +108,8 @@ class ScanResult:
     git_pivots_count: int = 0
     jwt_tokens_found: int = 0
     jwt_cracked: int = 0
+    cicd_files_scanned: int = 0
+    cicd_artifacts: int = 0
     cloud_capabilities: int = 0
     html_report_path: Optional[str] = None
 
@@ -528,6 +531,18 @@ async def run_scan(
                 result.jwt_cracked = sum(1 for a in analyses if a.cracked_with)
             except Exception as e:
                 log.warn(f"C7 JWT analysis failed: {e}")
+
+        # ----- C6: CI/CD secrets harvesting --------------------------------
+        if opts.cicd_secrets:
+            try:
+                from .cicd_secrets import run_cicd_scan, write_cicd_report
+                recovered = opts.output_dir / "recovered_source"
+                cicd_report = run_cicd_scan(recovered, log=log)
+                write_cicd_report(cicd_report, opts.output_dir)
+                result.cicd_files_scanned = cicd_report.files_scanned
+                result.cicd_artifacts = len(cicd_report.artifacts)
+            except Exception as e:
+                log.warn(f"C6 CI/CD secrets failed: {e}")
 
         # ----- C3: Cloud capability enumeration ----------------------------
         if opts.cloud_enum and findings:

@@ -113,6 +113,9 @@ def parse_args(argv=None):
                         "alternates, sourcemaps, internal hostnames).")
     p.add_argument("--no-jwt-forge", action="store_true",
                    help="Skip C7 JWT analysis (alg:none forge, weak HS256 cracking).")
+    p.add_argument("--no-cicd-secrets", action="store_true",
+                   help="Skip C6 CI/CD secrets harvesting (GitHub Actions, "
+                        "GitLab CI, CircleCI, Bitbucket, Jenkins, Travis, Azure).")
     p.add_argument("--cloud-enum", action="store_true",
                    help="C3 — enumerate cloud permissions on every verified key "
                         "(AWS STS/IAM/S3/Lambda, GitHub /user/*, GitLab, Slack). "
@@ -126,6 +129,12 @@ def parse_args(argv=None):
                         "for pre-registered endpoints (WebDAV PUT, etc.).")
     p.add_argument("--no-html-report", action="store_true",
                    help="Skip the consolidated report.html generation.")
+    p.add_argument("--graph", action="store_true",
+                   help="EXPERIMENTAL — drive the scan through the Worklist "
+                        "graph scheduler (ARCHITECTURE.md §5) instead of the "
+                        "linear pipeline. Adds graph-audit.jsonl + "
+                        "graph-report.json. Skips opt-in escalation handlers; "
+                        "use the default mode for full feature parity.")
     p.add_argument("--exploit-roadmap", action="store_true",
                    help="After scan, ask Claude (strict-mode, evidence-cited) "
                         "for a ranked exploitation plan. Implies --ai.")
@@ -404,6 +413,7 @@ async def _main_async(args) -> int:
         origin_discovery=args.origin_discovery,
         git_pivots=not args.no_git_pivots,
         jwt_forge=not args.no_jwt_forge,
+        cicd_secrets=not args.no_cicd_secrets,
         cloud_enum=args.cloud_enum,
         webdav=args.webdav,
         html_report=not args.no_html_report,
@@ -422,6 +432,34 @@ async def _main_async(args) -> int:
     # logger emits its own sqlmap-style lines as the scan progresses.
     log.start_heartbeat(interval=2.0)
     try:
+        if args.graph:
+            from .core.graph_driver import run_graph_scan
+            log.info("graph mode: routing scan through Worklist scheduler (§5)")
+            graph_result = await run_graph_scan(
+                opts.target_url, opts.output_dir,
+                timeout=opts.timeout,
+                concurrency=opts.concurrency,
+                insecure_ssl=opts.insecure_ssl,
+                allow_mutating=opts.allow_mutating,
+                proxy=opts.proxy,
+            )
+            log.stop_heartbeat()
+            console.print()
+            console.print(Panel.fit(
+                f"[green]Graph scan complete.[/green]  "
+                f"artifacts: [white]{graph_result.seen}[/white]  "
+                f"handler-calls: [white]{graph_result.handler_calls}[/white]  "
+                f"findings: [white]{graph_result.findings}[/white]  "
+                f"duration: [white]{graph_result.duration_s:.1f}s[/white]",
+                border_style="green",
+            ))
+            console.print(f"  by-kind: [cyan]{graph_result.artifacts_by_kind}[/cyan]")
+            console.print(f"  audit:   [cyan]{graph_result.audit_path}[/cyan]")
+            if graph_result.html_report_path:
+                console.print(
+                    f"  html:    [cyan]{graph_result.html_report_path}[/cyan]"
+                )
+            return 0
         result = await run_scan(opts)
     finally:
         log.stop_heartbeat()
@@ -679,6 +717,13 @@ async def _main_async(args) -> int:
             f"[bold]C7 JWT analysis:[/bold] {result.jwt_tokens_found} tokens{cracked_msg}"
         )
         console.print(f"    └─ open  [cyan]{opts.output_dir}/jwt-analysis.md[/cyan]")
+    # C6 CI/CD secrets
+    if result.cicd_files_scanned:
+        console.print(
+            f"[bold]C6 CI/CD secrets:[/bold] {result.cicd_files_scanned} config file(s), "
+            f"[bold yellow]{result.cicd_artifacts}[/bold yellow] artifact(s) extracted"
+        )
+        console.print(f"    └─ open  [cyan]{opts.output_dir}/cicd-secrets.md[/cyan]")
     # C3 cloud enum
     if result.cloud_capabilities:
         console.print(

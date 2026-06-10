@@ -33,6 +33,28 @@ Must surpass `git-dumper` / `GitTools` / `AIGitsploit` with:
 
 ## CHANGELOG
 
+### 2026-02 (Round 12) — C6 CI/CD Secrets + §5 Worklist Graph Refactor
+- **C6 CI/CD secrets** (`gitvulture/core/cicd_secrets.py`, 256 LOC):
+  parses 7 platforms (GitHub Actions, GitLab CI, CircleCI, Bitbucket,
+  Jenkins, Travis, Azure Pipelines) for inline literal secrets,
+  `${{ secrets.X }}` refs, OIDC `id-token: write` + audience claims
+  (cloud-takeover signal). Wired into orchestrator after C7; ON by
+  default, `--no-cicd-secrets` to skip. 20 dedicated pytest tests.
+- **§5 Worklist Graph** (`gitvulture/core/worklist.py`, ~430 LOC):
+  spec-mandated rewrite of the escalation backbone. Implements
+  canonical-form artifact identity (Trap 1), state-as-kind promotions
+  (Trap 2), no-atomization for BFS (Trap 3), terminal-handler budget
+  reserve (Trap 4). 21 pytest tests covering every §9.1 acceptance
+  criterion (canonical_form, priority determinism, state-as-kind,
+  budget reserve, cycle guard, termination, retry).
+- **Graph driver** (`gitvulture/core/graph_driver.py`, ~280 LOC):
+  4 handler adapters (Recon / SecretHunt / SecretsExporter /
+  ReportWriter) + `run_graph_scan()` entry. Wired behind `--graph` flag
+  so the linear orchestrator stays default — zero regression risk.
+- Final test count: **82/82 passing** (41 prior + 20 C6 + 21 graph).
+- Live verification: `gitvulture https://example.com/ --graph` →
+  0.3s scan, ScopeGuard + Worklist + audit JSONL all functioning.
+
 ### 2026-02 (latest) — Bullet-proof plain mode + auto-fallback for Windows
 User reported the tool still appeared frozen on Windows despite all previous
 fixes. Since the dev sandbox is Linux-aarch64 and cannot run Wine x86, I added

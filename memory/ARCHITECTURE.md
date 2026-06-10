@@ -1045,4 +1045,83 @@ this wave (D4 is data, D10 needs a live WebDAV target, HTML is rendering).
 | 9 | endpoint_discovery, live_diff, origin_finder | 730 |
 | 10 | git_pivots, jwt_forge, cloud_enum | 640 |
 | 11 | bypass_library (D4 ext), webdav, report_html | 480 |
-| **Total** | **13 new feature modules, 41 unit tests** | **~2,756** |
+| 12 | cicd_secrets (C6), worklist (§5 graph), graph_driver | ~1000 |
+| **Total** | **15 new feature modules, 82 unit tests** | **~3,756** |
+
+### 11.7 Round 12 — C6 + Graph Refactor (Feb 2026)
+
+**C6 CI/CD secrets** — `/app/gitvulture/core/cicd_secrets.py` (256 LOC)
+- 7 platforms parsed: GitHub Actions, GitLab CI, CircleCI, Bitbucket,
+  Jenkins, Travis, Azure Pipelines
+- Inline literal-secret detection (high severity if value matches
+  AKIA/ghp_/sk_/xox shape)
+- GitHub `${{ secrets.X }}` / `${{ vars.X }}` / `${{ inputs.X }}` ref harvesting
+- GitLab `$VAR` / `${VAR}` ref harvesting with shell-builtin filter
+- OIDC: `id-token: write` + `audience: …` → cloud-takeover flag
+- Wired into orchestrator after C7 JWT, before C3 Cloud Enum
+- ON by default; `--no-cicd-secrets` to skip
+- Writes `<out>/cicd-secrets.{json,md}` + CLI summary line
+- 20 dedicated unit tests (`test_cicd_secrets.py`)
+
+**§5 Worklist graph** — `/app/gitvulture/core/worklist.py` (~430 LOC)
+- `Artifact` (frozen, canonical_form-based id via §5.1 whitelist)
+  - `CANONICAL_FIELDS` registry maps kind → identity-defining fields
+  - `METADATA_FIELDS_EXCLUDED` enforces Trap 1 (no severity / lineage in id)
+  - Lineage capped at 32 (keeps the closest parents)
+- `Budget` with `report_reserve` for terminal handlers
+  - `BudgetReserveViolation` raised if non-terminal eats the reserve
+  - `_DEFAULT_FLOOR` charges handlers without `estimated_cost`
+- `Handler` protocol (`can_handle` + `run`, both `async`)
+- `priority()` — deterministic, no wall-clock (§5.5)
+- `Worklist` scheduler:
+  - `asyncio.Condition`-based dequeue with K=3 idle-tick termination
+  - heap-based priority queue, monotonic `seq` tie-break
+  - per-(handler, artifact) `visited` set
+  - 2 retries with exponential backoff on handler crash
+  - identity-merge on duplicate submit (lineage union, stricter severity)
+  - `authorize_handler()` pre-check (§2.1.1 second gate)
+  - JSONL audit at `<out>/graph-audit.jsonl`: enqueue / ok / failed /
+    denied / budget_skip / retry / merge / loop_guard_tripped events
+- `TERMINAL_HANDLERS` set matches §5.6.1 exactly (5 handlers)
+
+**Graph driver** — `/app/gitvulture/core/graph_driver.py` (~280 LOC)
+- Thin handler-adapter layer: `ReconHandler`, `SecretHuntHandler`,
+  `SecretsExporterHandler`, `ReportWriterHandler` wrap existing modules
+- `run_graph_scan()` is the public entry; sets up ScopeGuard + HttpClient
+  + Worklist, seeds a `host` artifact, drives to quiescence
+- Writes `<out>/graph-report.json` + reuses `report_html.write_html_report`
+
+**CLI integration**
+- `--graph` flag (EXPERIMENTAL) routes scan through the Worklist scheduler
+- `--no-cicd-secrets` flag added to disable C6
+- Linear orchestrator remains the default — zero regression risk
+
+**Tests**
+- `test_cicd_secrets.py` — 20 tests (platform detection, parsing,
+  end-to-end synthetic repo, output writer)
+- `test_worklist.py` — 21 tests covering EVERY §9.1 acceptance criterion:
+  - canonical-form identity (Trap 1): 5 tests
+  - priority determinism (no wall-clock): 3 tests
+  - state-as-kind promotion chain (Trap 2): 2 tests
+  - budget reserve for terminal handlers (Trap 4): 3 tests
+  - cycle / depth guard: 2 tests
+  - termination + retry: 2 tests
+  - end-to-end smoke: 2 tests
+  - terminal handler set matches §5.6.1: 1 test
+  - canonical-id stability (key-order independence): 1 test
+
+**Verification**
+- All 82/82 tests green (41 prior + 20 C6 + 21 graph)
+- Live `--graph` run against `https://example.com/` completed in 0.3s,
+  artifact graph correctly seeded, ScopeGuard + Worklist + JSONL audit
+  all functioning
+- Linear pipeline unaffected (default mode)
+
+**Deferred / out-of-scope for v1**
+- Migrating opt-in handlers (D2, C3, C7, C8, C9, D10, sast, jwt_forge,
+  cicd_secrets) into graph mode — current driver only wires the core read
+  path. Linear mode keeps full feature parity.
+- SHA-256 repo support (rare in 2026; §10 explicit rejection for v1)
+- SIGUSR1 graph-state dump (§5.10 nice-to-have)
+- Checkpoint / `--resume` (§5.11) — requires a separate state-persistence
+  pass; not blocking on the core graph contract.

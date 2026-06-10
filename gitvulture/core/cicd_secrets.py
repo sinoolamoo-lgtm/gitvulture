@@ -44,7 +44,7 @@ class CICDReport:
 
 # Detect literal credentials inline in YAML (rare but devastating)
 _INLINE_SECRET = re.compile(
-    r'^\s*([A-Z][A-Z0-9_]{2,})\s*:\s*[\'"]?([^\s\'"#][^\'"#]{4,})[\'"]?\s*$',
+    r'^\s*([A-Z][A-Z0-9_]{2,})\s*:\s*[\'"]?([^\s\'"#\n][^\'"#\n]{4,}?)[\'"]?\s*$',
     re.MULTILINE,
 )
 # GitHub: ${{ secrets.NAME }} / ${{ vars.NAME }}
@@ -74,7 +74,7 @@ def _detect_platform(rel_path: str) -> str:
         return "github_actions"
     if rel.endswith(".gitlab-ci.yml") or rel.endswith("/.gitlab-ci.yml"):
         return "gitlab_ci"
-    if "/.circleci/config" in rel:
+    if "/.circleci/config" in rel or rel.startswith(".circleci/config"):
         return "circleci"
     if rel.endswith("bitbucket-pipelines.yml"):
         return "bitbucket"
