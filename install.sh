@@ -63,6 +63,27 @@ pip install --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/ \
     pip install -e "$SCRIPT_DIR" >/dev/null 2>&1 || fail "pip install failed"
 ok "gitvulture installed (editable)"
 
+# ---------- 3b. SAST engine (semgrep) ----------
+# C1 SAST is optional but enabled by default. If semgrep isn't installed
+# the SAST phase prints a warning and skips; here we offer one-shot install.
+if ! command -v semgrep >/dev/null 2>&1; then
+    if [ "$QUIET" -eq 1 ]; then
+        say "installing semgrep (for C1 SAST) — pass --skip-semgrep to disable"
+        pip install semgrep >/dev/null 2>&1 && ok "semgrep installed" || \
+            say "semgrep install failed — SAST will skip with a warning"
+    else
+        echo
+        printf "Install semgrep now (enables C1 SAST)? [Y/n]: "
+        read -r ans || true
+        if [ -z "$ans" ] || [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
+            pip install semgrep >/dev/null 2>&1 && ok "semgrep installed" || \
+                say "semgrep install failed — SAST will skip with a warning"
+        fi
+    fi
+else
+    ok "semgrep already present ($(semgrep --version 2>/dev/null | head -1))"
+fi
+
 # ---------- 4. Embed EMERGENT_LLM_KEY ----------
 DEFAULT_KEY="sk-emergent-07c12D71306386c4d9"
 CFG_DIR="$HOME/.gitvulture"

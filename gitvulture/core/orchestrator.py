@@ -51,6 +51,9 @@ class ScanOptions:
     verify_secrets: bool = False
     sast: bool = True
     origin_discovery: bool = False  # D2 — off by default (slow + network-heavy)
+    git_pivots: bool = True         # C9 — cheap, on by default
+    jwt_forge: bool = True          # C7 — offline, on by default
+    cloud_enum: bool = False        # C3 — opt-in (hits external APIs)
     insecure_ssl: bool = False
     bypass_403: bool = True
     ua_rotate: bool = True
@@ -97,6 +100,10 @@ class ScanResult:
     live_reachable: int = 0
     origin_candidates: int = 0
     origin_verified: int = 0
+    git_pivots_count: int = 0
+    jwt_tokens_found: int = 0
+    jwt_cracked: int = 0
+    cloud_capabilities: int = 0
 
     def to_dict(self) -> dict:
         def _conv(o):
@@ -455,6 +462,68 @@ async def run_scan(
             "type": "phase", "phase": "secret_hunt", "status": "done",
             "data": {"findings": len(findings)}
         })
+
+        # ----- C9: Git-native pivots ---------------------------------------
+        if opts.git_pivots:
+            try:
+                from .git_pivots import run_git_pivots, write_pivots_report
+                from urllib.parse import urlsplit
+                primary_host = (urlsplit(opts.target_url).hostname or "").lower()
+                recovered = opts.output_dir / "recovered_source"
+                pivots = run_git_pivots(
+                    git_dir, recovered, primary_host=primary_host, log=log,
+                )
+                write_pivots_report(pivots, opts.output_dir)
+                result.git_pivots_count = (
+                    len(pivots.submodules) + len(pivots.alternates)
+                    + len(pivots.lfs_endpoints) + len(pivots.sourcemaps)
+                    + len(pivots.internal_hosts) + len(pivots.hooks)
+                )
+            except Exception as e:
+                log.warn(f"C9 git-pivots failed: {e}")
+
+        # ----- C7: JWT forge analysis --------------------------------------
+        if opts.jwt_forge and findings:
+            try:
+                from .jwt_forge import (
+                    analyze_jwts, find_jwts_in_text, write_jwt_report,
+                )
+                # Harvest JWTs from findings + blobs in recovered_source/
+                tokens: list[str] = []
+                for f in findings:
+                    if f.rule_id == "jwt":
+                        tokens.append(f.match)
+                recovered = opts.output_dir / "recovered_source"
+                if recovered.exists():
+                    for p in list(recovered.rglob("*"))[:5000]:
+                        if not p.is_file() or p.stat().st_size > 1_000_000:
+                            continue
+                        try:
+                            txt = p.read_text(encoding="utf-8", errors="ignore")
+                        except (OSError, UnicodeDecodeError):
+                            continue
+                        tokens.extend(find_jwts_in_text(txt))
+                tokens = list(dict.fromkeys(tokens))[:100]  # dedup + cap
+                # Candidate keys = every recovered string finding
+                candidates = [f.match for f in findings if f.match]
+                analyses = analyze_jwts(tokens, candidates, log=log)
+                write_jwt_report(analyses, opts.output_dir)
+                result.jwt_tokens_found = len(analyses)
+                result.jwt_cracked = sum(1 for a in analyses if a.cracked_with)
+            except Exception as e:
+                log.warn(f"C7 JWT analysis failed: {e}")
+
+        # ----- C3: Cloud capability enumeration ----------------------------
+        if opts.cloud_enum and findings:
+            try:
+                from .cloud_enum import (
+                    enumerate_verified_keys, write_capability_report,
+                )
+                caps = await enumerate_verified_keys(findings, log=log)
+                write_capability_report(caps, opts.output_dir)
+                result.cloud_capabilities = len(caps)
+            except Exception as e:
+                log.warn(f"C3 cloud enum failed: {e}")
 
         # ----- Phase 5b: SAST (C1) + L3 + C8 -------------------------------
         # 1. Discover endpoints from recovered source (L3)

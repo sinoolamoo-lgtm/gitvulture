@@ -108,6 +108,16 @@ def parse_args(argv=None):
     p.add_argument("--origin-discovery", action="store_true",
                    help="D2 — try to find the real origin IP behind a CDN/WAF "
                         "via crt.sh + DNS permutations. Adds verified IPs to scope.")
+    p.add_argument("--no-git-pivots", action="store_true",
+                   help="Skip C9 git-native pivot mining (submodules, hooks, "
+                        "alternates, sourcemaps, internal hostnames).")
+    p.add_argument("--no-jwt-forge", action="store_true",
+                   help="Skip C7 JWT analysis (alg:none forge, weak HS256 cracking).")
+    p.add_argument("--cloud-enum", action="store_true",
+                   help="C3 — enumerate cloud permissions on every verified key "
+                        "(AWS STS/IAM/S3/Lambda, GitHub /user/*, GitLab, Slack). "
+                        "Hits external APIs and IS logged by the provider — "
+                        "use only with explicit engagement consent.")
     p.add_argument("--exploit-roadmap", action="store_true",
                    help="After scan, ask Claude (strict-mode, evidence-cited) "
                         "for a ranked exploitation plan. Implies --ai.")
@@ -384,6 +394,9 @@ async def _main_async(args) -> int:
         auth=auth_tuple,
         sast=sast,
         origin_discovery=args.origin_discovery,
+        git_pivots=not args.no_git_pivots,
+        jwt_forge=not args.no_jwt_forge,
+        cloud_enum=args.cloud_enum,
     )
 
     log.kv("target", opts.target_url)
@@ -640,6 +653,27 @@ async def _main_async(args) -> int:
             console.print(
                 f"    └─ open  [cyan]{opts.output_dir}/origin-discovery.json[/cyan]"
             )
+    # C9 git pivots
+    if result.git_pivots_count:
+        console.print(
+            f"[bold]C9 Git pivots:[/bold] {result.git_pivots_count} discoveries "
+            f"(submodules / hooks / alternates / sourcemaps / hostnames)"
+        )
+        console.print(f"    └─ open  [cyan]{opts.output_dir}/git-pivots.md[/cyan]")
+    # C7 JWT
+    if result.jwt_tokens_found:
+        cracked_msg = (f" — [bold red]{result.jwt_cracked} CRACKED with recovered keys[/bold red]"
+                       if result.jwt_cracked else "")
+        console.print(
+            f"[bold]C7 JWT analysis:[/bold] {result.jwt_tokens_found} tokens{cracked_msg}"
+        )
+        console.print(f"    └─ open  [cyan]{opts.output_dir}/jwt-analysis.md[/cyan]")
+    # C3 cloud enum
+    if result.cloud_capabilities:
+        console.print(
+            f"[bold]C3 Cloud capabilities:[/bold] {result.cloud_capabilities} key(s) enumerated"
+        )
+        console.print(f"    └─ open  [cyan]{opts.output_dir}/cloud-capabilities.md[/cyan]")
     if args.json:
         console.print_json(json.dumps(result.to_dict(), default=str))
     log.close()

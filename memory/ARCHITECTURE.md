@@ -929,6 +929,59 @@ ExploitRoadmapHandler     *               → terminal, exploit-roadmap.md   [--
 **Deferred (intentional)**
 - Graph refactor (§5): 500-800 LOC invasive refactor with high regression risk. ARCHITECTURE.md §5 is the locked spec — implement in a dedicated session with `testing_agent_v3_fork` immediately after to catch breakages. None of the Round-9 features depend on it.
 
+### 11.4 Third implementation wave shipped (Round 10)
+
+**C9 Git-native pivots** — `/app/gitvulture/core/git_pivots.py` (240 LOC)
+- `.gitmodules` parser → upstream submodule URLs
+- `.git/hooks/*` mining (snippets, may contain creds)
+- `objects/info/alternates` → linked on-disk repos
+- `.gitattributes`/`.lfsconfig` → Git LFS endpoints
+- JSON source-map parsing (`.js.map`) → original sources + URL hints
+- Internal hostname extraction from `.env`, `*.yml`, `config.php` etc.
+  (filters CDN noise, keeps `.internal/.corp/.local` + `dev/stage/qa/admin` prefixes)
+- Writes `<out>/git-pivots.{json,md}`
+- ON by default; `--no-git-pivots` to skip
+
+**C7 JWT forge** — `/app/gitvulture/core/jwt_forge.py` (180 LOC)
+- Pure-Python pkt-line-free JWT parser (b64url decode + JSON)
+- `forge_alg_none` — strips signature, replaces `alg` with `none`
+- `forge_kid_injection` — sets `kid` to a path-traversal payload
+- `crack_hs256` — HMAC-SHA256 brute-force against every recovered secret as candidate key. Constant-time comparison.
+- `find_jwts_in_text` — `eyJ...eyJ...` regex with dedup
+- ON by default; `--no-jwt-forge` to skip
+- Writes `<out>/jwt-analysis.{json,md}`
+
+**C3 Cloud capability enumeration** — `/app/gitvulture/core/cloud_enum.py` (220 LOC)
+- Pairs `aws-access-key-id` with `aws-secret-access-key` by file proximity
+- AWS: boto3 STS GetCallerIdentity, IAM GetUser+policies, S3 ListBuckets, Lambda ListFunctions (all read-only). Skips with error if boto3 absent.
+- GitHub: `/user`, `/user/repos`, `/user/orgs`, `/user/installations` + X-OAuth-Scopes header
+- GitLab: `/api/v4/user`, `/api/v4/projects?membership=true`, `/personal_access_tokens/self`
+- Slack: `auth.test`, `conversations.list?limit=1`
+- **Opt-in via `--cloud-enum`** because these hits ARE logged on the provider side (CloudTrail, GitHub audit log, ...)
+- Writes `<out>/cloud-capabilities.{json,md}`
+
+**Auto-install of semgrep**
+- `install.sh`: detects missing semgrep, prompts (or auto-installs in `--quiet`)
+- `install.bat`: silent `pip install semgrep` if missing, prints status
+- Enables C1 SAST out of the box on fresh installs
+
+**CLI flags added**
+- `--no-git-pivots`, `--no-jwt-forge`, `--cloud-enum`
+- All visible in `gitvulture --help`
+
+**Tests** — `/app/backend/tests/test_c3_c7_c9.py` (12 new tests)
+- C9: `.gitmodules` parse, sourcemap parse, internal-host extraction, smoke run with hook file
+- C7: JWT parse, alg:none forge, kid injection, HS256 crack success+fail, regex find with dedup
+
+**Combined test count: 41/41 passing**.
+
+**End-to-end verification**
+- Synthetic codebase: 1 submodule, 2 internal hostnames (`db.internal.corp`, `staging-api.example.com`), 1 JWT cracked with `hunter2` from a 4-candidate list. ✓
+
+**Deferred (with strong reasoning)**
+- Graph refactor (§5): 500-800 LOC, very high regression risk. **Must** be implemented in a dedicated session with `testing_agent_v3_fork` immediately after. None of the C3/C7/C9/D2 features depend on it; ARCHITECTURE.md §5 is the locked spec.
+- `--allow-sha256` for SHA-256 repos: same dedicated-session reasoning (rare in 2026).
+
 ---
 
 **End of architectural surface.** Further work = per-handler rule review only.

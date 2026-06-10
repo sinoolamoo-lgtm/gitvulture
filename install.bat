@@ -137,6 +137,20 @@ if errorlevel 1 (
 popd
 echo [OK] Installed
 
+REM ---- step 6b: optional semgrep for C1 SAST ----
+where semgrep >nul 2>&1
+if errorlevel 1 (
+    echo Installing semgrep ^(enables C1 SAST^)...
+    pip install semgrep >nul 2>&1
+    if errorlevel 1 (
+        echo [!] semgrep install failed - SAST phase will skip with a warning
+    ) else (
+        echo [OK] semgrep installed
+    )
+) else (
+    echo [OK] semgrep already present
+)
+
 REM ---- step 7: write LLM key + create launcher ----
 echo.
 echo === 7/8 Configuring LLM key and launcher ===
