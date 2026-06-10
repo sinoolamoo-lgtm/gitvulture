@@ -365,6 +365,9 @@ class Worklist:
         budget: Optional[Budget] = None,
         concurrency: int = 4,
         audit_path: Optional[Any] = None,
+        checkpoint_path: Optional[Any] = None,
+        checkpoint_every: int = 100,
+        resume_from: Optional[Any] = None,
     ):
         self.handlers: dict[str, Handler] = {h.handler_id: h for h in handlers}
         # Reverse map: artifact kind → list of handler ids
@@ -387,6 +390,17 @@ class Worklist:
         self._audit = _GraphAudit(audit_path)
         self._stopping = False
         self._idle_ticks = 0
+        self._completed_tasks = 0
+        self._recent_transitions: list[dict] = []
+
+        # Checkpoint / resume (§5.11)
+        self._checkpoint_path = checkpoint_path
+        self._checkpoint_every = max(1, checkpoint_every) if checkpoint_every else 0
+        if resume_from is not None:
+            self._restore(resume_from)
+
+        # SIGUSR1 live state dump (§5.10) — non-Windows only
+        self._install_sigusr1()
 
     # --- public API -------------------------------------------------------
     async def submit(
@@ -476,6 +490,13 @@ class Worklist:
         workers = [asyncio.create_task(self._worker(i))
                    for i in range(self.concurrency)]
         await asyncio.gather(*workers, return_exceptions=True)
+        # Final checkpoint + audit state-dump (§5.11 + §5.10)
+        if self._checkpoint_path is not None:
+            self._write_checkpoint()
+        try:
+            self._audit.write({"event": "final_state", "state": self.dump_state()})
+        except Exception:
+            pass
         self._audit.close()
         return RunReport(
             seen=len(self.seen_artifacts),
@@ -616,6 +637,207 @@ class Worklist:
             "findings": len(result.findings),
         })
 
+        # Track for SIGUSR1 dumps & checkpoint trigger
+        self._recent_transitions.append({
+            "task_seq": task.seq,
+            "handler": handler.handler_id,
+            "artifact_id": artifact.id,
+            "status": result.status,
+            "new_artifacts": len(result.new_artifacts),
+        })
+        if len(self._recent_transitions) > 20:
+            self._recent_transitions = self._recent_transitions[-20:]
+        self._completed_tasks += 1
+        if (self._checkpoint_path is not None
+                and self._checkpoint_every
+                and self._completed_tasks % self._checkpoint_every == 0):
+            self._write_checkpoint()
+
+    # ----- §5.10 observability ----------------------------------------------
+    def dump_state(self) -> dict:
+        """Snapshot of current scheduler state — used by SIGUSR1 and the
+        interactive `graph` command (§5.10)."""
+        # Top-10 pending priorities (peek without mutating heap)
+        top10 = sorted(self._queue)[:10]
+        top10_view = [
+            {"priority": p, "seq": s, "handler": t.handler_id,
+             "artifact_id": t.artifact_id}
+            for p, s, t in top10
+        ]
+        spent = self.budget.spent
+        total_http = max(1, self.budget.max_http_requests)
+        total_wall = max(0.001, self.budget.max_wall_clock_s)
+        return {
+            "queue_size": len(self._queue),
+            "in_flight": self._in_flight,
+            "seen_artifacts": len(self.seen_artifacts),
+            "completed_tasks": self._completed_tasks,
+            "budget_pct": {
+                "http": round(100.0 * spent.http / total_http, 1),
+                "wall_clock": round(
+                    100.0 * (time.monotonic() - self.budget.started_at) / total_wall,
+                    1,
+                ),
+                "llm_tokens": round(
+                    100.0 * spent.llm_tokens / max(1, self.budget.max_llm_tokens), 1,
+                ),
+                "handler_calls": round(
+                    100.0 * self.budget.handler_calls
+                    / max(1, self.budget.max_handler_calls), 1,
+                ),
+            },
+            "top10_priorities": top10_view,
+            "recent_transitions": list(self._recent_transitions[-10:]),
+            "stopping": self._stopping,
+        }
+
+    def _install_sigusr1(self) -> None:
+        """Install a SIGUSR1 handler that dumps state to stderr (§5.10).
+        No-op on Windows or when no signal subsystem is available."""
+        try:
+            import signal
+            import sys
+            sig = getattr(signal, "SIGUSR1", None)
+            if sig is None:
+                return  # Windows
+            wl_ref = self
+            def _handler(_signum, _frame):
+                try:
+                    state = wl_ref.dump_state()
+                except Exception as e:
+                    sys.stderr.write(f"[graph SIGUSR1] dump_state failed: {e}\n")
+                    sys.stderr.flush()
+                    return
+                try:
+                    sys.stderr.write(
+                        "[graph SIGUSR1] " + json.dumps(state, default=str) + "\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+                try:
+                    wl_ref._audit.write({"event": "sigusr1_dump", "state": state})
+                except Exception:
+                    pass
+            signal.signal(sig, _handler)
+        except (ValueError, OSError, AttributeError):
+            # ValueError: signal only works in main thread; harmless during tests.
+            # Re-arm SIG_IGN as a safety net so the process won't die.
+            try:
+                import signal as _s
+                _s.signal(_s.SIGUSR1, _s.SIG_IGN)
+            except Exception:
+                pass
+
+    # ----- §5.11 checkpoint + resume ----------------------------------------
+    def _write_checkpoint(self) -> None:
+        """Serialize ids+metadata only (no raw secret bodies — §5.11)."""
+        if self._checkpoint_path is None:
+            return
+        try:
+            from pathlib import Path
+            p = Path(str(self._checkpoint_path))
+            payload = {
+                "version": 1,
+                "completed_tasks": self._completed_tasks,
+                "seen_artifacts": [
+                    {
+                        "id": a.id,
+                        "kind": a.kind,
+                        "payload": _safe_payload(a.kind, a.payload),
+                        "severity": a.severity,
+                        "confidence": a.confidence,
+                        "origin_lineage": list(a.origin_lineage),
+                    }
+                    for a in self.seen_artifacts.values()
+                ],
+                "visited": [list(v) for v in self.visited],
+                "queue": [
+                    {"priority": pr, "seq": sq, "handler_id": t.handler_id,
+                     "artifact_id": t.artifact_id, "attempt": t.attempt,
+                     "reenqueue_depth": t.reenqueue_depth,
+                     "parent_task_seq": t.parent_task_seq}
+                    for pr, sq, t in self._queue
+                ],
+                "budget_spent": {
+                    "http": self.budget.spent.http,
+                    "llm_tokens": self.budget.spent.llm_tokens,
+                    "wall_clock_s": self.budget.spent.wall_clock_s,
+                    "handler_calls": self.budget.handler_calls,
+                },
+                "seq": self._seq,
+                "findings_count": len(self.findings),
+            }
+            p.write_text(json.dumps(payload, default=str), encoding="utf-8")
+            try:
+                import os
+                os.chmod(p, 0o600)
+            except OSError:
+                pass
+            self._audit.write({"event": "checkpoint", "tasks": self._completed_tasks})
+        except OSError:
+            pass
+
+    def _restore(self, resume_from: Any) -> None:
+        """Reload `seen_artifacts`, `visited`, `queue`, and budget from a
+        previous run's `.checkpoint.json`. Best-effort; partial restore
+        triggers a warning in the audit log but does not abort."""
+        from pathlib import Path
+        p = Path(str(resume_from))
+        if not p.exists():
+            return
+        try:
+            payload = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self._audit.write({"event": "resume_failed", "reason": "parse"})
+            return
+        for a in payload.get("seen_artifacts", []):
+            art = Artifact(
+                kind=a["kind"],
+                payload=a.get("payload", {}),
+                id=a.get("id", ""),
+                severity=a.get("severity", "info"),
+                confidence=float(a.get("confidence", 1.0)),
+                origin_lineage=tuple(a.get("origin_lineage", []) or []),
+            )
+            self.seen_artifacts[art.id] = art
+        for v in payload.get("visited", []):
+            if len(v) == 2:
+                self.visited.add((v[0], v[1]))
+        for t in payload.get("queue", []):
+            task = Task(
+                seq=t.get("seq", 0),
+                handler_id=t.get("handler_id", ""),
+                artifact_id=t.get("artifact_id", ""),
+                priority=t.get("priority", 0),
+                attempt=t.get("attempt", 0),
+                reenqueue_depth=t.get("reenqueue_depth", 0),
+                parent_task_seq=t.get("parent_task_seq"),
+            )
+            heapq.heappush(self._queue, (task.priority, task.seq, task))
+        bs = payload.get("budget_spent", {})
+        self.budget.spent = ResourceCost(
+            http=int(bs.get("http", 0)),
+            llm_tokens=int(bs.get("llm_tokens", 0)),
+            wall_clock_s=float(bs.get("wall_clock_s", 0.0)),
+        )
+        self.budget.handler_calls = int(bs.get("handler_calls", 0))
+        self._seq = int(payload.get("seq", 0))
+        self._completed_tasks = int(payload.get("completed_tasks", 0))
+        self._audit.write({
+            "event": "resumed",
+            "artifacts": len(self.seen_artifacts),
+            "queue": len(self._queue),
+            "completed_tasks": self._completed_tasks,
+        })
+
+
+def _safe_payload(kind: str, payload: dict) -> dict:
+    """Drop fields that may contain raw secret material from checkpoints
+    (§5.11 — keys + values restricted to id-defining hashes)."""
+    SECRET_LIKE = {"value", "secret", "raw", "token", "password", "key_material"}
+    return {k: v for k, v in (payload or {}).items() if k not in SECRET_LIKE}
+
 
 @dataclass
 class RunReport:
@@ -632,3 +854,18 @@ __all__ = [
     "MAX_REENQUEUE_DEPTH", "ResourceCost", "RunReport", "Task",
     "TERMINAL_HANDLERS", "Worklist", "priority",
 ]
+
+
+# Install a default no-op for SIGUSR1 at module import (Unix only) so the
+# Python interpreter doesn't terminate with the default disposition if a
+# signal arrives BEFORE `Worklist.__init__` registers the real dump handler
+# (e.g. during the long-running recon phase before the graph is built).
+try:
+    import signal as _signal
+    if hasattr(_signal, "SIGUSR1"):
+        try:
+            _signal.signal(_signal.SIGUSR1, _signal.SIG_IGN)
+        except (ValueError, OSError):
+            pass
+except ImportError:
+    pass

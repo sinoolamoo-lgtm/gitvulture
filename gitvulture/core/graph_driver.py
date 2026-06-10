@@ -232,6 +232,16 @@ async def run_graph_scan(
     insecure_ssl: bool = False,
     allow_mutating: bool = False,
     proxy: Optional[str] = None,
+    enable_sast: bool = False,
+    enable_cicd: bool = True,
+    enable_jwt_forge: bool = True,
+    enable_live_diff: bool = True,
+    enable_git_pivots: bool = True,
+    enable_origin_finder: bool = False,
+    enable_webdav: bool = False,
+    enable_cloud_enum: bool = False,
+    checkpoint_every: int = 100,
+    resume_from: Optional[Path] = None,
 ) -> GraphScanReport:
     """Drive a full scan through the Worklist graph (`--graph` mode)."""
     log = get_logger()
@@ -267,19 +277,34 @@ async def run_graph_scan(
         log=log,
         http_client=client,
         scope_guard=guard,
+        extra={
+            "enable_sast": enable_sast,
+            "enable_cicd": enable_cicd,
+            "enable_jwt_forge": enable_jwt_forge,
+            "enable_live_diff": enable_live_diff,
+            "enable_git_pivots": enable_git_pivots,
+            "enable_origin_finder": enable_origin_finder,
+            "enable_webdav": enable_webdav,
+            "enable_cloud_enum": enable_cloud_enum,
+        },
     )
 
+    from .graph_handlers import all_optin_handlers
     wl = Worklist(
         handlers=[
             ReconHandler(),
             SecretHuntHandler(),
+            *all_optin_handlers(),
             SecretsExporterHandler(),
             ReportWriterHandler(),
         ],
         ctx=ctx,
         budget=Budget(),
-        concurrency=2,   # most handlers are sequential in this thin chain
+        concurrency=2,
         audit_path=output_dir / "graph-audit.jsonl",
+        checkpoint_path=output_dir / ".checkpoint.json",
+        checkpoint_every=checkpoint_every,
+        resume_from=resume_from,
     )
 
     # Seed the graph with the target host

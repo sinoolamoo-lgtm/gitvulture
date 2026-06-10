@@ -33,6 +33,36 @@ Must surpass `git-dumper` / `GitTools` / `AIGitsploit` with:
 
 ## CHANGELOG
 
+### 2026-02 (Round 13) — Opt-in graph adapters + §5.10 + §5.11
+- **8 new graph-mode handler adapters** (`graph_handlers.py`, ~350 LOC):
+  SastHandler (C1), CicdSecretsHandler (C6), JwtForgeHandler (C7),
+  LiveDiffHandler (C8), GitPivotsHandler (C9), OriginFinderHandler (D2),
+  WebdavHandler (D10), CloudEnumHandler (C3). Each gated via
+  `ctx.extra.enable_*` flags so `--graph` mode now has functional parity
+  with the linear pipeline (modulo AI/LLM phases). New CLI flags:
+  `--graph-sast`, `--graph-cloud-enum`, `--graph-origin-finder`,
+  `--graph-webdav`.
+- **§5.10 observability**: `Worklist.dump_state()` returns queue_size,
+  in_flight, completed_tasks, budget_pct, top-10 pending priorities,
+  last-10 transitions. SIGUSR1 handler dumps state to stderr +
+  `sigusr1_dump` audit event for replay tools. Final state appended on
+  `run()` completion. SIG_IGN installed at module-import time so the
+  process can't terminate before Worklist binds its handler.
+- **§5.11 checkpoint + resume**: `.checkpoint.json` written every 100
+  completed tasks + once on scan-end (chmod 0600). `_safe_payload()`
+  strips any `value`/`secret`/`raw`/`token`/`password`/`key_material`
+  fields so no raw secret bytes ever reach the file. `--resume OUT_DIR`
+  CLI flag restores visited pairs → handlers skip already-seen
+  artifacts → warm resume in **0.1s** vs 12.8s cold scan (verified
+  live).
+- **Live verification (Stage 1 lab)**: cold `--graph` scan completed in
+  12.8s with 8 handler calls + 156 git objects; mid-flight SIGUSR1
+  captured 2 state dumps; `--resume` restored state and finished in
+  0.1s; all graph artifacts written (graph-report.json,
+  cicd-secrets.{json,md}, report.html, graph-audit.jsonl).
+- **Final test count: 120/120 passing** (86 prior + 12 observability/
+  checkpoint + 22 graph-handlers protocol/gating tests).
+
 ### 2026-02 (Round 12+) — Live Stage 1 demo + critical pack-discovery fix
 **Live demo target**: `https://172.105.126.219/` (Web Security Academy
 "Git Directory Exposure" lab, Stage 1 — Easy)

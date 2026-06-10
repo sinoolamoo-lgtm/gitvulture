@@ -1118,10 +1118,91 @@ this wave (D4 is data, D10 needs a live WebDAV target, HTML is rendering).
 - Linear pipeline unaffected (default mode)
 
 **Deferred / out-of-scope for v1**
-- Migrating opt-in handlers (D2, C3, C7, C8, C9, D10, sast, jwt_forge,
-  cicd_secrets) into graph mode — current driver only wires the core read
-  path. Linear mode keeps full feature parity.
+- ~~Migrating opt-in handlers (D2, C3, C7, C8, C9, D10, sast, jwt_forge,
+  cicd_secrets) into graph mode~~ — **DONE in Round 13** (see §11.8).
 - SHA-256 repo support (rare in 2026; §10 explicit rejection for v1)
-- SIGUSR1 graph-state dump (§5.10 nice-to-have)
-- Checkpoint / `--resume` (§5.11) — requires a separate state-persistence
-  pass; not blocking on the core graph contract.
+- ~~SIGUSR1 graph-state dump (§5.10 nice-to-have)~~ — **DONE in Round 13**.
+- ~~Checkpoint / `--resume` (§5.11)~~ — **DONE in Round 13**.
+
+### 11.8 Round 13 — opt-in graph adapters + §5.10 + §5.11 (Feb 2026)
+
+**8 new graph-mode handler adapters** — `/app/gitvulture/core/graph_handlers.py`
+- `SastHandler` (C1) — `repo_reconstructed` → `sast_sink[]`, `finding[]`
+  (gated by `ctx.extra.enable_sast`, ON via `--graph-sast`)
+- `CicdSecretsHandler` (C6) — `repo_reconstructed` → `key[]`, `finding[]`
+  (ON by default, OFF via `--no-cicd-secrets`)
+- `JwtForgeHandler` (C7) — `repo_reconstructed` → `key[]` (cracked HS256),
+  `finding[]` (ON by default, OFF via `--no-jwt-forge`)
+- `LiveDiffHandler` (C8) — `repo_reconstructed` + endpoints → `finding[]`
+  (ON by default)
+- `GitPivotsHandler` (C9) — `repo_reconstructed` → `host[]` (submodules /
+  sourcemap extra hosts → new graph nodes for lateral pivot)
+- `OriginFinderHandler` (D2) — `host` → `origin_candidate[]`
+  (OFF, ON via `--graph-origin-finder`)
+- `WebdavHandler` (D10) — `host` → `finding[]`
+  (OFF, ON via `--graph-webdav`)
+- `CloudEnumHandler` (C3) — `key`/`verified_key` → deferred finding stub
+  (raw key material lives in `secrets/files/`; graph artifacts carry only
+  the hash, so true enumeration still routes via linear `--cloud-enum`)
+- `all_optin_handlers()` returns one instance of each; gating happens
+  inside `can_handle()` based on `ctx.extra.enable_*` flags
+
+**§5.10 observability** — `Worklist.dump_state()` + SIGUSR1 handler
+- `dump_state()` returns: queue_size, in_flight, seen_artifacts,
+  completed_tasks, budget_pct (http/wall/llm/handler_calls), top-10
+  pending priorities (peek without mutating heap), last-10 transitions,
+  stopping flag
+- SIGUSR1 handler installed in `Worklist.__init__`; on signal it
+  prints `[graph SIGUSR1] {json}` to stderr and appends a
+  `sigusr1_dump` event to `graph-audit.jsonl` for replay tools
+- `final_state` event auto-appended on `run()` completion
+- Cross-platform safety net: SIG_IGN installed at `cli.py` and
+  `worklist.py` import time so the process can't terminate from
+  SIGUSR1 before the dump handler is bound (recon takes ~10s before
+  Worklist runs the first task in some scans)
+
+**§5.11 checkpoint + resume**
+- `Worklist(checkpoint_path=…, checkpoint_every=N)` writes
+  `.checkpoint.json` (chmod 0600) every N completed tasks + once at
+  scan-end
+- Checkpoint payload (`version=1`): completed_tasks, seen_artifacts
+  (id+kind+payload-without-secrets+severity+confidence+lineage),
+  visited, queue, budget_spent, seq
+- `_safe_payload()` drops fields named `value`, `secret`, `raw`,
+  `token`, `password`, `key_material` so no raw secret bytes ever
+  reach the checkpoint file
+- `--resume <OUT_DIR>` loads `<OUT_DIR>/.checkpoint.json` and seeds the
+  Worklist: visited pairs are restored → handlers don't re-run on
+  already-seen artifacts → "warm resume" finishes in 0.1s instead of
+  12.8s (verified end-to-end against the live Stage 1 lab)
+- Corrupt / missing checkpoint = best-effort no-op (logs audit
+  `resume_failed` event)
+
+**New CLI flags**
+- `--resume OUT_DIR`           — resume previous `--graph` scan
+- `--graph-sast`               — enable C1 SAST in graph mode
+- `--graph-cloud-enum`         — enable C3 cloud-enum stub
+- `--graph-origin-finder`      — enable D2 origin discovery
+- `--graph-webdav`             — enable D10 WebDAV probing
+
+**Live verification (Stage 1 lab, `https://172.105.126.219/`)**
+- Cold `--graph` scan: 12.8s, 8 handler calls (Recon, SecretHunt, Cicd,
+  JwtForge, LiveDiff, GitPivots, SecretsExporter, ReportWriter),
+  156 objects, .checkpoint.json (943B, mode 0600) written
+- SIGUSR1 mid-flight: 2 dumps captured in stderr + 2 `sigusr1_dump`
+  events in audit JSONL — live `in_flight=1, completed_tasks=0,
+  budget_pct.wall=0.4%`
+- `--resume <out>`: identical scan finishes in **0.1s** (warm restore)
+- All graph artifacts written: `graph-report.json`, `cicd-secrets.{json,md}`,
+  `report.html`
+
+**Tests (34 new)**
+- `test_observability_and_checkpoint.py` — 12 tests (dump_state shape,
+  recent_transitions tracking, final_state audit event, SIGUSR1
+  install safety, checkpoint write triggers / chmod 0600 / round-trip
+  restore / corrupt-file tolerance / no raw secrets in payload)
+- `test_graph_handlers.py` — 22 tests (handler protocol compliance ×8,
+  unique ids, all_optin_handlers shape, can_handle gating per flag ×6,
+  graceful no-op on missing recovered_source ×5, cloud-enum deferred-
+  finding stub)
+- **Final test count: 120/120 passing.**

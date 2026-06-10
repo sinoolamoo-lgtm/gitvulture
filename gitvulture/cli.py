@@ -33,6 +33,18 @@ import os
 import sys
 from pathlib import Path
 
+# Install SIGUSR1 no-op disposition at the earliest possible moment so that
+# `gitvulture --graph` users can send a state-dump signal during the long
+# recon phase (before `Worklist.__init__` installs its real dump handler).
+# Without this, Python's default disposition (terminate) would kill the
+# process. (§5.10 observability.)
+try:
+    import signal as _signal  # noqa: E402
+    if hasattr(_signal, "SIGUSR1"):
+        _signal.signal(_signal.SIGUSR1, _signal.SIG_IGN)
+except (ImportError, ValueError, OSError):
+    pass
+
 # Load env files BEFORE any code that reads EMERGENT_LLM_KEY
 try:
     from dotenv import load_dotenv  # type: ignore
@@ -135,6 +147,18 @@ def parse_args(argv=None):
                         "linear pipeline. Adds graph-audit.jsonl + "
                         "graph-report.json. Skips opt-in escalation handlers; "
                         "use the default mode for full feature parity.")
+    p.add_argument("--resume", type=Path, default=None, metavar="OUTPUT_DIR",
+                   help="Resume a previous --graph scan from "
+                        "<OUTPUT_DIR>/.checkpoint.json (§5.11).")
+    p.add_argument("--graph-cloud-enum", action="store_true",
+                   help="In --graph mode, enable C3 cloud enumeration "
+                        "(default OFF — requires raw key material).")
+    p.add_argument("--graph-origin-finder", action="store_true",
+                   help="In --graph mode, enable D2 origin discovery.")
+    p.add_argument("--graph-webdav", action="store_true",
+                   help="In --graph mode, enable D10 WebDAV probes.")
+    p.add_argument("--graph-sast", action="store_true",
+                   help="In --graph mode, enable C1 SAST (requires semgrep).")
     p.add_argument("--exploit-roadmap", action="store_true",
                    help="After scan, ask Claude (strict-mode, evidence-cited) "
                         "for a ranked exploitation plan. Implies --ai.")
@@ -442,6 +466,16 @@ async def _main_async(args) -> int:
                 insecure_ssl=opts.insecure_ssl,
                 allow_mutating=opts.allow_mutating,
                 proxy=opts.proxy,
+                enable_sast=args.graph_sast,
+                enable_cicd=not args.no_cicd_secrets,
+                enable_jwt_forge=not args.no_jwt_forge,
+                enable_live_diff=True,
+                enable_git_pivots=not args.no_git_pivots,
+                enable_origin_finder=args.graph_origin_finder,
+                enable_webdav=args.graph_webdav,
+                enable_cloud_enum=args.graph_cloud_enum,
+                resume_from=(args.resume / ".checkpoint.json"
+                             if args.resume else None),
             )
             log.stop_heartbeat()
             console.print()
