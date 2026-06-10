@@ -93,6 +93,7 @@ class HttpClient:
         verbose_log=None,
         default_headers: Optional[dict] = None,
         auth: Optional[tuple[str, str]] = None,
+        scope_guard=None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -102,6 +103,7 @@ class HttpClient:
         self.ua_rotate = ua_rotate
         self.default_headers = default_headers or {}
         self.auth = auth
+        self.scope_guard = scope_guard      # E1 — single authorization point
         self._semaphore = asyncio.Semaphore(concurrency)
         self._limiter = RateLimiter(rate_limit)
         self._log = verbose_log or (lambda *a, **kw: None)
@@ -204,7 +206,18 @@ class HttpClient:
         *,
         extra_headers: Optional[dict] = None,
         _no_calibrate: bool = False,
+        method: str = "GET",
+        body: Optional[bytes] = None,
     ) -> FetchResult:
+        # E1 — every dispatch passes through ScopeGuard first.
+        if self.scope_guard is not None:
+            decision = self.scope_guard.authorize(method, url)
+            if not decision.allowed:
+                self.log.warn(f"scope-guard denied {method} {url}: {decision.reason}")
+                return FetchResult(
+                    url=url, status=0,
+                    error=f"scope-guard:{decision.reason}",
+                )
         proxy = self._next_proxy()
         client = self._client_for(proxy)
         headers = {
@@ -224,12 +237,18 @@ class HttpClient:
 
         backoff = 0.5
         last_err: Optional[str] = None
-        self.log.payload(f"GET {url}")
+        method_u = method.upper()
+        self.log.payload(f"{method_u} {url}")
         for attempt in range(self.retries):
             try:
                 await self._limiter.acquire()
                 async with self._semaphore:
-                    resp = await client.get(url, headers=headers)
+                    if method_u in ("GET", "HEAD", "OPTIONS"):
+                        resp = await client.request(method_u, url, headers=headers)
+                    else:
+                        resp = await client.request(
+                            method_u, url, headers=headers, content=body or b"",
+                        )
                 # Adaptive backoff on rate-limit signals
                 if resp.status_code in (429, 503):
                     self.log.warning(
@@ -247,7 +266,7 @@ class HttpClient:
                            and self._is_soft_404(url, resp.status_code, resp.content))
                 # Surface as 404 in the result so callers stop trusting the body
                 status = 404 if soft404 else resp.status_code
-                self.log.http("GET", url, status, len(resp.content))
+                self.log.http(method_u, url, status, len(resp.content))
                 return FetchResult(
                     url=url,
                     status=status,
@@ -266,6 +285,21 @@ class HttpClient:
                 backoff *= 1.5
         self.log.http("GET", url, 0, 0)
         return FetchResult(url=url, status=0, error=last_err)
+
+    async def post(
+        self,
+        url: str,
+        body: bytes,
+        *,
+        extra_headers: Optional[dict] = None,
+    ) -> FetchResult:
+        """Public POST helper — used by Smart-HTTP (D1).
+
+        The endpoint MUST be pre-registered with the ScopeGuard via
+        `contract.register_post_exact()` or this call is denied.
+        """
+        return await self._request(url, extra_headers=extra_headers,
+                                   method="POST", body=body)
 
     def _detect_waf(self, resp: httpx.Response) -> Optional[str]:
         headers_low = {k.lower(): v.lower() for k, v in resp.headers.items()}

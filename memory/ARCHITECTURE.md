@@ -838,6 +838,49 @@ ExploitRoadmapHandler     *               → terminal, exploit-roadmap.md   [--
 | A1 | (no change) | Verified the code already uses non-bare repo (`init_repo` moves `git_dir` to `target/.git`; `_run` uses `cwd=repo_dir`). The earlier doc claim of `git init --bare` was incorrect — code is fine. |
 | A6 (full) | (deferred) | `--offensive` flag already exists (`cli.py:108`). No further change needed beyond the new `--escalate` alias. |
 
+### 11.2 First implementation wave shipped (Round 8)
+**E1 ScopeGuard** — `/app/gitvulture/core/scope_guard.py` (276 LOC)
+- `ScopeContract` with `(scheme, host, port)` identity, `extra_allowed_post_endpoints` exact-match
+- `ScopeGuard.authorize(method, url)` — 5 rules implemented
+- `authorize_redirect()` for 30x re-validation
+- `request_consent()` serialized via `asyncio.Lock`
+- Audit JSONL at `<out>/scope-audit.jsonl`
+- Hooked into `HttpClient._request()` — every dispatch passes through
+- Smart-HTTP endpoints pre-registered automatically by orchestrator
+
+**D1 Smart-HTTP** — `/app/gitvulture/core/smart_http.py` (290 LOC)
+- pkt-line encode/decode (length-prefix, sentinels, bounds-check ≤ 0xfff0)
+- v1 ref-advertisement parser (NUL-split caps, symref extraction)
+- v2 `ls-refs` round-trip with `peel`/`symrefs`/`ref-prefix refs/`
+- Auto-detects v1 vs v2 from advertisement
+- sha256 fail-closed (no parsing, returns error)
+- Tried at both `/info/refs` and `/.git/info/refs`
+- Hooked into orchestrator P2; new refs merged into `RefSet`
+
+**C1 SAST** — `/app/gitvulture/sast/__init__.py` (340 LOC)
+- semgrep subprocess wrapper with skip+warn fallback if absent
+- 15 embedded high-signal rules (PHP/Python/JS/Java SQLi, cmdi, deserialization, etc.)
+- `<out>/sast/{sast.md, sast.json, by-endpoint.md, parse_errors.log}`
+- L3 file→endpoint join via `endpoints_by_file` dict (single source of truth)
+- Hooked into orchestrator after Phase 5; gated by `--no-sast`
+
+**HttpClient changes** — `/app/gitvulture/core/http_client.py`
+- Accepts `scope_guard` kwarg; injected by orchestrator
+- New `post(url, body, *, extra_headers)` public method for D1
+- `_request()` now method-aware (GET/HEAD/OPTIONS vs POST/PUT/...)
+- ScopeGuard check is the very first line of `_request()` — refuses to dispatch on Decision(allowed=False)
+
+**CLI** — `--no-sast` added; new flags shown in `--help`.
+
+**Tests** — `/app/backend/tests/test_scope_and_smart.py` (16 tests, all green):
+- ScopeGuard: in-scope/off-scope, encoded path payloads allowed, exact mutating registration, prefix-doesn't-leak, scheme distinct, path normalization
+- pkt-line: encode/decode, sentinels, truncated, oversized rejection
+- SmartHttpResult.ok property
+
+**Live verification**:
+- `gitvulture https://91.239.232.79/ --i-have-permission --insecure --no-escalate -v` → 6727 scope-audit decisions, Smart-HTTP probed both prefixes, fell back to dumb-HTTP cleanly when target wasn't a smart server.
+- All earlier features preserved (plain mode, doctor, secrets/, heartbeat).
+
 ---
 
 **End of architectural surface.** Further work = per-handler rule review only.

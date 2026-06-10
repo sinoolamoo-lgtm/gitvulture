@@ -49,6 +49,7 @@ class ScanOptions:
     output_dir: Path
     ai_triage: bool = True
     verify_secrets: bool = False
+    sast: bool = True
     insecure_ssl: bool = False
     bypass_403: bool = True
     ua_rotate: bool = True
@@ -88,6 +89,8 @@ class ScanResult:
     errors: list[str] = field(default_factory=list)
     phase: str = "init"
     secrets_dir: Optional[str] = None
+    sast_sinks: int = 0
+    sast_dir: Optional[str] = None
 
     def to_dict(self) -> dict:
         def _conv(o):
@@ -157,6 +160,22 @@ async def run_scan(
     if opts.cookies:
         default_headers["Cookie"] = opts.cookies
 
+    # E1 — ScopeGuard: single authorization gate for every outbound request.
+    from .scope_guard import ScopeContract, ScopeGuard
+    scope_contract = ScopeContract(allow_mutating=False, interactive_consent=False)
+    primary_host = scope_contract.add_host(opts.target_url)
+    # Pre-register Smart-HTTP (D1) endpoints so the POST in ls-refs is allowed.
+    for path in ("/info/refs", "/git-upload-pack",
+                 "/.git/info/refs", "/.git/git-upload-pack"):
+        scope_contract.register_post_exact(
+            primary_host.scheme, primary_host.host, primary_host.port, path,
+        )
+    scope_guard = ScopeGuard(
+        scope_contract,
+        audit_path=opts.output_dir / "scope-audit.jsonl",
+        log=log,
+    )
+
     client = HttpClient(
         base_url=opts.target_url,
         timeout=opts.timeout,
@@ -170,6 +189,7 @@ async def run_scan(
         verbose_log=_log,
         default_headers=default_headers,
         auth=opts.auth,
+        scope_guard=scope_guard,
     )
     result = ScanResult(target_url=opts.target_url, output_dir=str(opts.output_dir),
                         started_at=started)
@@ -243,13 +263,49 @@ async def run_scan(
         log.phase("PHASE 2  ::  REF DISCOVERY")
         await _emit(progress, {"type": "phase", "phase": "ref_discovery", "status": "running"})
         refs = await discover_refs(client)
+
+        # ----- D1: Smart-HTTP feedback (§3.8) -------------------------------
+        # If the target supports the smart protocol, enumerate refs via
+        # ls-refs (v2) or the advertisement (v1) and merge them with what
+        # dumb-HTTP found. This unlocks targets where /.git/refs/heads/* is
+        # blocked but /info/refs?service=git-upload-pack is open.
+        try:
+            from .smart_http import SmartHttpProbe
+            smart = await SmartHttpProbe(client, opts.target_url, log).probe()
+            if smart.ok and smart.refs:
+                new_refs = 0
+                for sha, name in smart.refs:
+                    if name not in refs.branches and name not in refs.tags:
+                        if name.startswith("refs/tags/"):
+                            refs.tags[name] = sha
+                        else:
+                            refs.branches[name] = sha
+                        refs.commits.add(sha)
+                        new_refs += 1
+                if new_refs:
+                    log.success(
+                        f"smart-http added {new_refs} new refs "
+                        f"({smart.protocol}, symref-HEAD={smart.symref_head})"
+                    )
+            elif smart.error:
+                log.info(f"smart-http skipped: {smart.error}")
+        except Exception as e:
+            log.warn(f"smart-http probe failed (continuing dumb-HTTP only): {e}")
+
         result.refs = refs
 
         # Write discovered metadata files to local .git
+        # Some targets (or test echo servers) return 200 on every path, so a
+        # ref name can shadow a directory. Skip such conflicts rather than
+        # abort the whole scan.
         for name, content in refs.raw_files.items():
             p = git_dir / name
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_bytes(content)
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(content)
+            except (FileExistsError, NotADirectoryError, OSError) as e:
+                log.trace(f"raw_files: skipping {name}: {e}")
+                continue
         # Ensure HEAD always exists
         if not (git_dir / "HEAD").exists() and recon.head_ref:
             (git_dir / "HEAD").write_text(recon.head_ref + "\n")
@@ -371,6 +427,26 @@ async def run_scan(
             "type": "phase", "phase": "secret_hunt", "status": "done",
             "data": {"findings": len(findings)}
         })
+
+        # ----- Phase 5b: SAST (C1) -----------------------------------------
+        # Static analysis on the recovered source tree, then link sinks to
+        # endpoints discovered during ref-discovery / recon. Gracefully skips
+        # if semgrep isn't installed.
+        if opts.sast:
+            result.phase = "sast"
+            log.phase("PHASE 5b ::  SAST (semgrep)")
+            try:
+                from ..sast import run_sast
+                recovered = opts.output_dir / "recovered_source"
+                endpoints_by_file: dict = {}  # L3 placeholder; populated when L3 lands
+                sast_report = run_sast(
+                    recovered, opts.output_dir,
+                    endpoints_by_file=endpoints_by_file, log=log,
+                )
+                result.sast_sinks = len(sast_report.sinks)
+                result.sast_dir = str(opts.output_dir / "sast")
+            except Exception as e:
+                log.warn(f"SAST failed: {e}")
 
         # ----- Phase 6: Live verification (OPT-IN) --------------------------
         if opts.verify_secrets and findings:

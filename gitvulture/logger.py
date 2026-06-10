@@ -262,6 +262,9 @@ class Logger:
     def warning(self, msg: str, **kw):
         self._emit("WARNING", msg, **kw)
 
+    # alias — many call sites use the shorter name
+    warn = warning
+
     def info(self, msg: str, **kw):
         self._emit("INFO", msg, **kw)
 

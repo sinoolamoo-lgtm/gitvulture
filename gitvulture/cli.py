@@ -102,6 +102,9 @@ def parse_args(argv=None):
     p.add_argument("--escalate", action="store_true",
                    help="(alias / no-op — escalation runs by default; use "
                         "--no-escalate to opt out)")
+    p.add_argument("--no-sast", action="store_true",
+                   help="Skip the SAST (C1) static-analysis phase. SAST runs "
+                        "by default if semgrep is installed.")
     p.add_argument("--exploit-roadmap", action="store_true",
                    help="After scan, ask Claude (strict-mode, evidence-cited) "
                         "for a ranked exploitation plan. Implies --ai.")
@@ -155,7 +158,8 @@ def parse_args(argv=None):
 def _run_doctor() -> int:
     """Environment self-check — prints ONE LINE AT A TIME so the user can
     see immediately if stdout is alive. No rich, no buffering, no magic."""
-    import platform, time
+    import platform
+    import time
     print("=" * 60, flush=True)
     print(" gitvulture --doctor  (live self-check)", flush=True)
     print("=" * 60, flush=True)
@@ -330,6 +334,7 @@ async def _main_async(args) -> int:
     elif user_wants_ai and not os.environ.get("EMERGENT_LLM_KEY"):
         log.warning("EMERGENT_LLM_KEY missing — AI stages will be skipped")
     escalate = not args.no_escalate
+    sast = not args.no_sast
 
     # Inject proxy auth if provided separately
     proxy = args.proxy
@@ -374,6 +379,7 @@ async def _main_async(args) -> int:
         cookies=args.cookies,
         user_agent=args.user_agent,
         auth=auth_tuple,
+        sast=sast,
     )
 
     log.kv("target", opts.target_url)
@@ -584,6 +590,27 @@ async def _main_async(args) -> int:
             console.print(
                 f"[bold]Secrets folder:[/bold] {result.secrets_dir}/ [bright_black](empty — no findings)[/bright_black]"
             )
+    if result.sast_dir:
+        if result.sast_sinks:
+            console.print(
+                f"[bold yellow]⚠  SAST sinks ({result.sast_sinks}) saved to:[/bold yellow] {result.sast_dir}/"
+            )
+            console.print(
+                f"    └─ open  [cyan]{result.sast_dir}/sast.md[/cyan]            grouped by severity"
+            )
+            console.print(
+                f"    └─ open  [cyan]{result.sast_dir}/by-endpoint.md[/cyan]     pivoted by live route"
+            )
+        else:
+            console.print(
+                f"[bold]SAST folder:[/bold] {result.sast_dir}/ [bright_black](no sinks)[/bright_black]"
+            )
+    # Scope-audit pointer (E1)
+    audit_path = opts.output_dir / "scope-audit.jsonl"
+    if audit_path.exists():
+        console.print(
+            f"[bold]Scope audit:[/bold] {audit_path} [bright_black](every HTTP decision)[/bright_black]"
+        )
     if args.json:
         console.print_json(json.dumps(result.to_dict(), default=str))
     log.close()
