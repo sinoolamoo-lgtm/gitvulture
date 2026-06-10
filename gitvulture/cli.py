@@ -118,6 +118,14 @@ def parse_args(argv=None):
                         "(AWS STS/IAM/S3/Lambda, GitHub /user/*, GitLab, Slack). "
                         "Hits external APIs and IS logged by the provider — "
                         "use only with explicit engagement consent.")
+    p.add_argument("--webdav", action="store_true",
+                   help="D10 — probe WebDAV (PROPFIND read-only by default; "
+                        "with --offensive --allow-mutating runs a PUT canary).")
+    p.add_argument("--allow-mutating", action="store_true",
+                   help="E1 — allow state-changing HTTP verbs through ScopeGuard "
+                        "for pre-registered endpoints (WebDAV PUT, etc.).")
+    p.add_argument("--no-html-report", action="store_true",
+                   help="Skip the consolidated report.html generation.")
     p.add_argument("--exploit-roadmap", action="store_true",
                    help="After scan, ask Claude (strict-mode, evidence-cited) "
                         "for a ranked exploitation plan. Implies --ai.")
@@ -397,6 +405,9 @@ async def _main_async(args) -> int:
         git_pivots=not args.no_git_pivots,
         jwt_forge=not args.no_jwt_forge,
         cloud_enum=args.cloud_enum,
+        webdav=args.webdav,
+        html_report=not args.no_html_report,
+        allow_mutating=args.allow_mutating,
     )
 
     log.kv("target", opts.target_url)
@@ -674,6 +685,12 @@ async def _main_async(args) -> int:
             f"[bold]C3 Cloud capabilities:[/bold] {result.cloud_capabilities} key(s) enumerated"
         )
         console.print(f"    └─ open  [cyan]{opts.output_dir}/cloud-capabilities.md[/cyan]")
+    # HTML one-page report
+    if result.html_report_path:
+        console.print(
+            f"\n[bold cyan]📄 One-page HTML report:[/bold cyan] "
+            f"[underline]{result.html_report_path}[/underline]"
+        )
     if args.json:
         console.print_json(json.dumps(result.to_dict(), default=str))
     log.close()

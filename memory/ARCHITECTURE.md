@@ -982,6 +982,67 @@ ExploitRoadmapHandler     *               → terminal, exploit-roadmap.md   [--
 - Graph refactor (§5): 500-800 LOC, very high regression risk. **Must** be implemented in a dedicated session with `testing_agent_v3_fork` immediately after. None of the C3/C7/C9/D2 features depend on it; ARCHITECTURE.md §5 is the locked spec.
 - `--allow-sha256` for SHA-256 repos: same dedicated-session reasoning (rare in 2026).
 
+### 11.5 Fourth implementation wave shipped (Round 11)
+
+**D4 path normalization tricks** — `bypass_library.py` extended
+- New encoded variants added: triple-encoding, fullwidth-slash (`\uff0f`),
+  fullwidth-dot, overlong UTF-8 (`%c0%ae`, `%e0%80%ae`, `%c0%af`),
+  Windows trailing dot/space, zero-width-space, matrix params (`;a=b`),
+  Tomcat semicolon path-params, newline/CR splitting (`%0a`/`%0d`),
+  null-byte truncation (`%00.json`).
+- Every existing handler that calls `encode_variants(path)` automatically
+  benefits — no integration changes needed.
+
+**D10 WebDAV chain** — `/app/gitvulture/core/webdav.py` (165 LOC)
+- OPTIONS → reads Allow header / DAV header
+- PROPFIND Depth=1 by default; Depth=infinity gated on `--offensive`
+- Mutating chain (PUT canary → GET verify → DELETE cleanup) gated on
+  BOTH `--offensive` AND `--allow-mutating` (E1 contract orthogonality)
+- Each canary path registered with `ScopeContract.register_post_exact()`
+  BEFORE dispatch — never widens the contract globally
+- Probes 9 common roots (`/`, `/webdav/`, `/dav/`, `/uploads/`, etc.)
+- Writes `<out>/webdav.{json,md}`
+- Opt-in via `--webdav`
+
+**HTML one-page report** — `/app/gitvulture/report_html.py` (270 LOC)
+- Self-contained: no external CSS/JS, dark-IDE-theme inline styles
+- Sticky nav + responsive stat grid + per-section tables
+- Reads every JSON artifact and conditionally renders sections
+- OPSEC banner reminding that live-verification side effects are logged
+- ON by default; `--no-html-report` to skip
+- Generated as `<out>/report.html` (~4 KB up to ~MB depending on findings)
+
+**`--allow-mutating` CLI flag** — proper E1 contract orthogonality
+- Independent from `--offensive` (aggressive *techniques*)
+- Required for WebDAV PUT, default-creds spray, etc.
+- Threaded into `ScopeContract.allow_mutating` at scan setup
+
+**Tests** — all 41 existing tests still pass; no new test file added for
+this wave (D4 is data, D10 needs a live WebDAV target, HTML is rendering).
+
+**End-to-end verification** (httpbin scan)
+- HTML report generated (4464 bytes)
+- All previous JSON / MD artifacts referenced and rendered
+- C9 discovered 17 git-native pivot signals
+- 8 new CLI flags exposed in `--help`
+
+**Deferred (intentional, final)**
+- **Graph refactor (§5)**: 500-800 LOC, locked spec in §5 of this document.
+  Must be implemented in a dedicated session immediately followed by
+  `testing_agent_v3_fork` to regression-check the **11 waves of features**
+  that depend on the current pipeline. **No further feature work should land
+  before Graph refactor + regression test.**
+
 ---
 
 **End of architectural surface.** Further work = per-handler rule review only.
+
+### 11.6 Cumulative LOC summary
+
+| Round | Module | New LOC |
+|---|---|---|
+| 8 | scope_guard, smart_http, sast | 906 |
+| 9 | endpoint_discovery, live_diff, origin_finder | 730 |
+| 10 | git_pivots, jwt_forge, cloud_enum | 640 |
+| 11 | bypass_library (D4 ext), webdav, report_html | 480 |
+| **Total** | **13 new feature modules, 41 unit tests** | **~2,756** |

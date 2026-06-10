@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import time
+from datetime import datetime
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
@@ -50,10 +51,13 @@ class ScanOptions:
     ai_triage: bool = True
     verify_secrets: bool = False
     sast: bool = True
-    origin_discovery: bool = False  # D2 — off by default (slow + network-heavy)
-    git_pivots: bool = True         # C9 — cheap, on by default
-    jwt_forge: bool = True          # C7 — offline, on by default
-    cloud_enum: bool = False        # C3 — opt-in (hits external APIs)
+    origin_discovery: bool = False
+    git_pivots: bool = True
+    jwt_forge: bool = True
+    cloud_enum: bool = False
+    webdav: bool = False
+    html_report: bool = True
+    allow_mutating: bool = False
     insecure_ssl: bool = False
     bypass_403: bool = True
     ua_rotate: bool = True
@@ -104,6 +108,7 @@ class ScanResult:
     jwt_tokens_found: int = 0
     jwt_cracked: int = 0
     cloud_capabilities: int = 0
+    html_report_path: Optional[str] = None
 
     def to_dict(self) -> dict:
         def _conv(o):
@@ -175,7 +180,10 @@ async def run_scan(
 
     # E1 — ScopeGuard: single authorization gate for every outbound request.
     from .scope_guard import ScopeContract, ScopeGuard
-    scope_contract = ScopeContract(allow_mutating=False, interactive_consent=False)
+    scope_contract = ScopeContract(
+        allow_mutating=getattr(opts, "allow_mutating", False),
+        interactive_consent=False,
+    )
     primary_host = scope_contract.add_host(opts.target_url)
     # Pre-register Smart-HTTP (D1) endpoints so the POST in ls-refs is allowed.
     for path in ("/info/refs", "/git-upload-pack",
@@ -216,10 +224,8 @@ async def run_scan(
         recon = await run_recon(client)
         result.recon = recon
         result.waf = recon.waf
+
         # ----- D2: Origin Discovery (opt-in via --origin-discovery) ---------
-        # If the target sits behind a CDN/WAF, try to find the real origin IP
-        # via crt.sh + DNS permutations. Verified candidates can be added to
-        # the scope and re-probed.
         if opts.origin_discovery:
             try:
                 from .origin_finder import discover_origins, write_origin_report
@@ -227,16 +233,26 @@ async def run_scan(
                 write_origin_report(od_report, opts.output_dir)
                 result.origin_candidates = len(od_report.candidates)
                 result.origin_verified = len(od_report.verified)
-                # Extend ScopeGuard with verified origins
                 if scope_guard and od_report.verified:
                     for c in od_report.verified:
                         scope_contract.add_host(f"{c.scheme}://{c.host}:{c.port}")
-                        log.success(
-                            f"D2: added {c.host}:{c.port} to scope "
-                            f"(similarity={c.similarity:.2f})"
-                        )
+                        log.success(f"D2: added {c.host}:{c.port} to scope")
             except Exception as e:
                 log.warn(f"origin discovery failed: {e}")
+
+        # ----- D10: WebDAV (opt-in via --webdav) ---------------------------
+        if opts.webdav:
+            try:
+                from .webdav import run_webdav, write_webdav_report
+                dav_report = await run_webdav(
+                    client, scope_contract, opts.target_url,
+                    offensive=opts.offensive,
+                    allow_mutating=getattr(opts, "allow_mutating", False),
+                    log=log,
+                )
+                write_webdav_report(dav_report, opts.output_dir)
+            except Exception as e:
+                log.warn(f"D10 WebDAV failed: {e}")
 
         if not recon.exposed:
             result.errors.append("No .git exposure detected.")
@@ -725,4 +741,20 @@ async def run_scan(
         except Exception as e:
             result.errors.append(f"failed to write report: {e}")
 
+        # HTML one-page consolidated report
+        if opts.html_report:
+            try:
+                from ..report_html import write_html_report
+                html_path = write_html_report(
+                    opts.output_dir,
+                    scan_meta={"target": opts.target_url,
+                               "started_at": str(datetime.now())},
+                )
+                result.html_report_path = str(html_path)
+                log.success(f"HTML report: {html_path}")
+            except Exception as e:
+                log.warn(f"HTML report failed: {e}")
+
+    if scope_guard:
+        scope_guard.close()
     return result
