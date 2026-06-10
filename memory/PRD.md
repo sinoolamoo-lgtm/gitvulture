@@ -33,6 +33,38 @@ Must surpass `git-dumper` / `GitTools` / `AIGitsploit` with:
 
 ## CHANGELOG
 
+### 2026-02 (Round 12+) — Live Stage 1 demo + critical pack-discovery fix
+**Live demo target**: `https://172.105.126.219/` (Web Security Academy
+"Git Directory Exposure" lab, Stage 1 — Easy)
+
+**Critical fix shipped during the live run**:
+- `core/object_engine.py::fetch_packs()` previously relied **solely** on
+  `/.git/objects/info/packs`. When this returns 404 (common on Apache
+  servers that don't auto-generate that index file but DO expose `.git/`
+  via `mod_autoindex`), the BFS would fetch 0 objects.
+- Fix: if `info/packs` is missing, scrape the directory listing HTML of
+  `/.git/objects/pack/` and extract `pack-<sha>.pack` filenames with a
+  pure regex (`pack-[0-9a-f]{40}\.pack`). Works for both Apache and
+  nginx listing styles.
+- Without the fix: 0 objects, 0 commits.
+- With the fix: 156 object SHAs from a 2.93 MB pack file, 9 commits,
+  2 branches, 131 source files recovered.
+- 4 dedicated regression tests in
+  `/app/backend/tests/test_pack_listing_fallback.py`.
+
+**Stage 1 outcome**:
+- `.git` exposure confirmed → Apache/2.4.25 with directory listing enabled
+- Pack file `pack-880f92a73e8f86c6515c89ea7e774ac7c8d48985` (2.9 MB) pulled
+- 9 commits + 2 branches reconstructed → 131 files recovered (incl.
+  `index.php`, `webparts/header.php`, `footer.php`, `sitemap.xml`)
+- Origin repo identified: `github.com:raymondsarinas/sequoiahotel.net.git`
+- 23-rule secret hunt: 0 hardcoded secrets (stage 1 is asset-only)
+- L1-L16 escalation: 800 path probes, 31 hits (assets)
+- All artifacts written: report.html, gitvulture-report.json,
+  cicd-secrets.{json,md}, git-pivots.{json,md}, scope-audit.jsonl (1.3 MB)
+
+**Final test count: 86/86 passing** (41 baseline + 20 C6 + 21 graph + 4 pack-listing).
+
 ### 2026-02 (Round 12) — C6 CI/CD Secrets + §5 Worklist Graph Refactor
 - **C6 CI/CD secrets** (`gitvulture/core/cicd_secrets.py`, 256 LOC):
   parses 7 platforms (GitHub Actions, GitLab CI, CircleCI, Bitbucket,

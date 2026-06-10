@@ -67,6 +67,25 @@ class ObjectEngine:
                 if pn not in idx_packs:
                     idx_packs.append(pn)
 
+        # Strategy 1b: Apache/Nginx directory listing of `objects/pack/`.
+        # Many misconfigured servers expose mod_autoindex; scrape any
+        # `pack-<sha>.pack` filenames from the HTML.
+        if not idx_packs:
+            listing = await self.client.fetch_path("objects/pack/")
+            if listing.ok and listing.content:
+                found = set()
+                for m in _PACK_NAME.finditer(listing.content):
+                    found.add(m.group(1).decode())
+                for sha in found:
+                    pn = f"pack-{sha}.pack"
+                    if pn not in idx_packs:
+                        idx_packs.append(pn)
+                if found:
+                    self.log.success(
+                        f"pack listing: discovered {len(found)} pack(s) "
+                        f"via directory autoindex"
+                    )
+
         for pack_name in idx_packs:
             sha = pack_name.replace("pack-", "").replace(".pack", "")
             idx_path = f"objects/pack/pack-{sha}.idx"
