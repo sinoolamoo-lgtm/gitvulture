@@ -105,6 +105,9 @@ def parse_args(argv=None):
     p.add_argument("--no-sast", action="store_true",
                    help="Skip the SAST (C1) static-analysis phase. SAST runs "
                         "by default if semgrep is installed.")
+    p.add_argument("--origin-discovery", action="store_true",
+                   help="D2 — try to find the real origin IP behind a CDN/WAF "
+                        "via crt.sh + DNS permutations. Adds verified IPs to scope.")
     p.add_argument("--exploit-roadmap", action="store_true",
                    help="After scan, ask Claude (strict-mode, evidence-cited) "
                         "for a ranked exploitation plan. Implies --ai.")
@@ -380,6 +383,7 @@ async def _main_async(args) -> int:
         user_agent=args.user_agent,
         auth=auth_tuple,
         sast=sast,
+        origin_discovery=args.origin_discovery,
     )
 
     log.kv("target", opts.target_url)
@@ -611,6 +615,31 @@ async def _main_async(args) -> int:
         console.print(
             f"[bold]Scope audit:[/bold] {audit_path} [bright_black](every HTTP decision)[/bright_black]"
         )
+    # L3 endpoints
+    if result.endpoints_found:
+        live_marker = (f" — [bold green]{result.live_reachable} live on target[/bold green]"
+                       if result.live_reachable else "")
+        console.print(
+            f"[bold]Endpoints discovered (L3):[/bold] {result.endpoints_found}{live_marker}"
+        )
+        console.print(
+            f"    └─ open  [cyan]{opts.output_dir}/endpoints.md[/cyan]    discovered routes"
+        )
+        if (opts.output_dir / "live-diff.md").exists():
+            console.print(
+                f"    └─ open  [cyan]{opts.output_dir}/live-diff.md[/cyan]    source ↔ deployment diff"
+            )
+    # D2 origin discovery
+    if result.origin_candidates:
+        v = result.origin_verified
+        console.print(
+            f"[bold]D2 Origin discovery:[/bold] {result.origin_candidates} candidates, "
+            f"[bold green]{v} verified[/bold green]"
+        )
+        if (opts.output_dir / "origin-discovery.json").exists():
+            console.print(
+                f"    └─ open  [cyan]{opts.output_dir}/origin-discovery.json[/cyan]"
+            )
     if args.json:
         console.print_json(json.dumps(result.to_dict(), default=str))
     log.close()

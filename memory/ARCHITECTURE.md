@@ -881,6 +881,54 @@ ExploitRoadmapHandler     *               → terminal, exploit-roadmap.md   [--
 - `gitvulture https://91.239.232.79/ --i-have-permission --insecure --no-escalate -v` → 6727 scope-audit decisions, Smart-HTTP probed both prefixes, fell back to dumb-HTTP cleanly when target wasn't a smart server.
 - All earlier features preserved (plain mode, doctor, secrets/, heartbeat).
 
+### 11.3 Second implementation wave shipped (Round 9)
+**L3 endpoint discovery** — `/app/gitvulture/core/endpoint_discovery.py` (290 LOC)
+- Regex-based route extraction across 7 frameworks (Laravel, Slim, Flask, FastAPI, Django, Express/NestJS, Spring, Rails, Gin/mux)
+- `_normalize_route()` collapses `{id}`/`<int:id>`/`:id` → `:id`
+- Produces `endpoints[]` AND `endpoints_by_file{}` for SAST single-source-of-truth join
+- Skips `node_modules/`, `vendor/`, `tests/`, etc.
+- Writes `<out>/endpoints.{json,md}`
+
+**C8 Live Diff** — `/app/gitvulture/core/live_diff.py` (170 LOC)
+- For each L3 endpoint, GET (or HEAD for mutating verbs) against live target
+- Concurrency-bounded (default 10), substitutes `:id` placeholders with `1`
+- Mutates `Endpoint.reachable` in place → SAST linker promotes sinks to `live=yes`
+- Writes `<out>/live-diff.{json,md}` with reachable count + removed-but-live section
+- Strictly read-only, scope-guarded
+
+**D2 Origin Discovery** — `/app/gitvulture/core/origin_finder.py` (270 LOC)
+- crt.sh JSON API enumeration of every cert ever issued for the target hostname
+- DNS permutations: 30+ prefixes (`origin.`, `dev.`, `stage.`, `internal.`, `api-dev.`, ...)
+- SimHash same-app verification (≥ 0.85 threshold per review refinement #3)
+- Verified candidates auto-extended into ScopeGuard's `authorized_hosts`
+- Opt-in via `--origin-discovery` flag (slow + network-heavy)
+- Writes `<out>/origin-discovery.json`
+
+**Orchestrator integration**
+- D2 runs after PHASE 1 (recon), before PHASE 2 (ref discovery)
+- L3 runs after PHASE 4 (reconstruction)
+- C8 runs immediately after L3, populating `endpoint.reachable`
+- SAST runs last, consuming the `endpoints_by_file` map with `reachable=True` markers
+- All three gracefully degrade (try/except, log warn) — no phase failure aborts the scan
+
+**CLI summary** — new lines:
+- `Endpoints discovered (L3): N — M live on target`
+- `D2 Origin discovery: N candidates, K verified`
+- Plus pointers to `endpoints.md` / `live-diff.md` / `origin-discovery.json`
+
+**Tests** — `/app/backend/tests/test_l3_d2.py` (12 new tests, all green)
+- L3: PHP Laravel, Flask, FastAPI, Express, Spring, by-file population, node_modules skip, route normalization
+- D2 pure functions: SimHash identical/different/empty, permutations, short-host edge case
+
+**Combined test count: 29/29 passing** (16 from Round 8 + 12 new + 1 existing).
+
+**Integration verification**
+- `gitvulture` on httpbin → no source code recovered → L3 returns 0 endpoints (correct degradation)
+- Synthetic-codebase test: 3 Laravel routes discovered, SAST sink linker promotes to `live=yes` after C8 marks endpoint reachable ✓
+
+**Deferred (intentional)**
+- Graph refactor (§5): 500-800 LOC invasive refactor with high regression risk. ARCHITECTURE.md §5 is the locked spec — implement in a dedicated session with `testing_agent_v3_fork` immediately after to catch breakages. None of the Round-9 features depend on it.
+
 ---
 
 **End of architectural surface.** Further work = per-handler rule review only.

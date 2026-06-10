@@ -50,6 +50,7 @@ class ScanOptions:
     ai_triage: bool = True
     verify_secrets: bool = False
     sast: bool = True
+    origin_discovery: bool = False  # D2 — off by default (slow + network-heavy)
     insecure_ssl: bool = False
     bypass_403: bool = True
     ua_rotate: bool = True
@@ -91,6 +92,11 @@ class ScanResult:
     secrets_dir: Optional[str] = None
     sast_sinks: int = 0
     sast_dir: Optional[str] = None
+    endpoints_found: int = 0
+    endpoints_dir: Optional[str] = None
+    live_reachable: int = 0
+    origin_candidates: int = 0
+    origin_verified: int = 0
 
     def to_dict(self) -> dict:
         def _conv(o):
@@ -203,6 +209,28 @@ async def run_scan(
         recon = await run_recon(client)
         result.recon = recon
         result.waf = recon.waf
+        # ----- D2: Origin Discovery (opt-in via --origin-discovery) ---------
+        # If the target sits behind a CDN/WAF, try to find the real origin IP
+        # via crt.sh + DNS permutations. Verified candidates can be added to
+        # the scope and re-probed.
+        if opts.origin_discovery:
+            try:
+                from .origin_finder import discover_origins, write_origin_report
+                od_report = await discover_origins(opts.target_url, log=log)
+                write_origin_report(od_report, opts.output_dir)
+                result.origin_candidates = len(od_report.candidates)
+                result.origin_verified = len(od_report.verified)
+                # Extend ScopeGuard with verified origins
+                if scope_guard and od_report.verified:
+                    for c in od_report.verified:
+                        scope_contract.add_host(f"{c.scheme}://{c.host}:{c.port}")
+                        log.success(
+                            f"D2: added {c.host}:{c.port} to scope "
+                            f"(similarity={c.similarity:.2f})"
+                        )
+            except Exception as e:
+                log.warn(f"origin discovery failed: {e}")
+
         if not recon.exposed:
             result.errors.append("No .git exposure detected.")
             # If we still have S3 hints + escalate, jump straight to L16
@@ -428,17 +456,50 @@ async def run_scan(
             "data": {"findings": len(findings)}
         })
 
-        # ----- Phase 5b: SAST (C1) -----------------------------------------
-        # Static analysis on the recovered source tree, then link sinks to
-        # endpoints discovered during ref-discovery / recon. Gracefully skips
-        # if semgrep isn't installed.
+        # ----- Phase 5b: SAST (C1) + L3 + C8 -------------------------------
+        # 1. Discover endpoints from recovered source (L3)
+        # 2. Probe each against live target (C8) — populates reachable=True
+        # 3. SAST runs and links sinks to the resulting endpoint map
+        endpoints_by_file: dict = {}
         if opts.sast:
+            result.phase = "endpoint_discovery"
+            log.phase("PHASE 5a ::  L3 ENDPOINT DISCOVERY")
+            try:
+                from .endpoint_discovery import discover_endpoints, write_endpoints_report
+                from .live_diff import run_live_diff, write_live_diff_report
+                recovered = opts.output_dir / "recovered_source"
+                endpoints, endpoints_by_file = discover_endpoints(recovered, log=log)
+                if endpoints:
+                    # C8 live diff — read-only probes against the discovered endpoints
+                    try:
+                        live_report = await run_live_diff(
+                            client, opts.target_url, endpoints, log=log,
+                            concurrency=min(opts.concurrency, 10),
+                        )
+                        write_live_diff_report(live_report, opts.output_dir)
+                        result.live_reachable = len(live_report.reachable_endpoints)
+                    except Exception as e:
+                        log.warn(f"live-diff failed: {e}")
+                    # Re-build by_file with reachable flag so SAST linker can
+                    # promote sinks to live=yes.
+                    for f, items in endpoints_by_file.items():
+                        for it in items:
+                            ep = next((e for e in endpoints
+                                       if e.id == it["id"]), None)
+                            if ep and ep.reachable:
+                                it["reachable"] = True
+                    write_endpoints_report(endpoints, opts.output_dir)
+                    result.endpoints_found = len(endpoints)
+                    result.endpoints_dir = str(opts.output_dir)
+            except Exception as e:
+                log.warn(f"endpoint discovery failed: {e}")
+
+            # SAST proper
             result.phase = "sast"
             log.phase("PHASE 5b ::  SAST (semgrep)")
             try:
                 from ..sast import run_sast
                 recovered = opts.output_dir / "recovered_source"
-                endpoints_by_file: dict = {}  # L3 placeholder; populated when L3 lands
                 sast_report = run_sast(
                     recovered, opts.output_dir,
                     endpoints_by_file=endpoints_by_file, log=log,
