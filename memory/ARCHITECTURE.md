@@ -21,6 +21,67 @@ Authority: every component on the read path is mechanical. Every aggressive
 or mutating action passes through a single `ScopeGuard` (§2). The LLM
 never directly executes HTTP — it proposes; the guard authorizes.
 
+### 0.1 Glossary
+| Term | Meaning |
+|---|---|
+| **artifact** | A typed node in the worklist graph. Has a stable `id` derived from `canonical_form`. Kinds: `host`, `endpoint`, `blob`, `commit`, `key`, `finding`, `sast_sink`, … |
+| **canonical_form** | The per-kind whitelist of identity-defining fields (e.g. for `key` = key material hash). EXCLUDES all metadata. Same logical artifact across runs = same `id`. |
+| **lineage** | `origin_lineage: tuple[ArtifactId, ...]` — the chain of parent artifacts that led to this one. Capped at 32; used for cycle detection and audit. |
+| **handler** | A pluggable unit (`Handler` protocol) that consumes one or more artifact kinds and emits new artifacts and/or findings. Examples: `ReconHandler`, `SastHandler`, `VerifyHandler`. |
+| **terminal handler** | A handler whose output is the final user-facing artifact (report, roadmap, secrets export). Draws from `Budget.report_reserve` so it always runs even when general budget is exhausted. Enumerated in §5.6.1. |
+| **state-as-kind** | Pattern where state transitions are modelled as *new artifact kinds*, never as metadata mutation. Example: `key → verified_key → enumerated_key`. Prevents the dedup paradox (Trap 2). |
+| **trap** | A design pitfall caught during architecture review. Five major traps were identified and fixed; see §5.1, §5.6, §5.8, §5.11 and §11 history. |
+| **ScopeGuard** | The single authority for outbound-request authorization. Every HTTP dispatch + every redirect re-passes through it. Contract in §2. |
+| **OOB** | Out-of-band; SSRF callback infrastructure. Disabled unless `--collaborator <host>` provided. |
+
+### 0.2 Pipeline overview (visual)
+
+```
+                 ┌──────────────────────────────────────────────────┐
+                 │              ScopeGuard (E1, §2)                 │
+                 │   intercepts every outbound + every redirect     │
+                 └────┬─────────────────────────────────────────────┘
+                      │ authorize(method,url) / authorize_redirect()
+   ┌──────────────────┴───────────────────┐
+   │            HttpClient (async)         │
+   └──────────────────┬───────────────────┘
+                      │
+   target URL ──► [Worklist Graph §5]
+                      │
+       submit(host)   ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │  P1 Recon ── emits ──► endpoint, ref, origin_candidate       │
+   │       ▼                                                       │
+   │  P2 Ref Discovery ───► commit, blob, ref                     │
+   │       ▼                                                       │
+   │  P3 Smart-HTTP (D1) ──► ref, commit         ◄─── feedback ──┐│
+   │       ▼                                                      ││
+   │  P3' Object Engine ───► repo_reconstructed (COARSE only)    ││
+   │       ▼                                                      ││
+   │  P4 Reconstruct ──────► branch, commit, dangling_*          ││
+   │       ▼                                                      ││
+   │  P5 Secret Hunt ──────► finding, key                        ││
+   │       ▼                                                      ││
+   │  C1 SAST ─────────────► sast_sink, finding                  ││
+   │       ▼                                                      ││
+   │  C8 Live Diff ────────► finding, endpoint                   ││
+   │       ▼                                                      ││
+   │  Verify ──────────────► verified_key  ───┐                  ││
+   │                                          ▼                  ││
+   │                                  CloudEnum, DbConnect,      ││
+   │                                  SshAttempt, JwtForge,      ││
+   │                                  CiCdSecrets, AiProbe ──────┘│
+   │                                          │                   │
+   │                                          ▼                   │
+   │  Terminal (always runs from report_reserve):                │
+   │      ExploitRoadmap, ReportWriter, SecretsExporter          │
+   └──────────────────────────────────────────────────────────────┘
+
+   Legend:
+     ───►   normal artifact emission
+     ◄───   feedback edge (verified artifacts re-enqueue earlier handlers)
+```
+
 ---
 
 ## 1. Pipeline Overview
@@ -95,6 +156,18 @@ class Decision:
    `(method, url)`. `httpx.AsyncClient(follow_redirects=False)` + manual
    loop is mandatory.
 5. PROPFIND default `Depth: 1`; `Depth: infinity` gated on `--offensive`.
+
+### 2.1.1 `authorize_handler(handler, artifact) -> Decision`
+A second, coarser gate used by the worklist scheduler BEFORE handler
+dispatch (in addition to per-request `authorize()`). It checks:
+- `handler.requires_consent` AND artifact does not carry an `approved_for_handler` lineage marker → emit consent prompt.
+- Handler's declared `estimated_cost` exceeds remaining (non-reserve)
+  budget → deny with `reason="budget"`.
+- Artifact's `payload.host` (if present) is in `authorized_hosts`.
+
+This handler-level gate is a cheap fast-path; it does NOT replace
+per-request `authorize()`, which still runs inside the HTTP client for
+every dispatch.
 
 ### 2.2 Audit JSONL
 One line per decision (including rejects):
@@ -279,6 +352,25 @@ Run on:
 - **HEAD** (primary): `recovered_source/`
 - **Dangling blobs**: critical-severity rules only
 - **C8 diff set**: removed-from-HEAD but present-in-deployed-live blobs
+
+#### 4.5.1 C8 diff-set provenance
+The "deployed-live" side is fetched by `LiveDiffHandler` (§6.4), NOT by
+SAST itself. Pipeline:
+1. For each file path in `recovered_source/HEAD` AND for endpoints
+   discovered by L3, derive a probable live URL (e.g.
+   `app/views/admin/dashboard.blade.php` → `/admin/dashboard`).
+2. `LiveDiffHandler` performs a `GET` of the live URL (read-only, scope-guarded).
+3. Diff the live response body against the recovered source:
+   - File EXISTS in recovered, MISSING / 404 on live → ignore (not deployed)
+   - File MISSING from recovered HEAD, but live URL returns 200 → flag as
+     "removed-from-source-but-still-deployed" — these go into the C8 diff set
+   - File exists on both → byte-diff to find commented credentials,
+     debug flags, removed routes that survive in build artifacts
+4. The C8 diff set is the set of blobs reachable from any **dangling
+   commit OR previous-HEAD ancestor** whose path corresponds to a live
+   URL returning 200.
+5. SAST scans these blobs with critical-severity rules only (lower-severity
+   matches would drown the operator in noise).
 
 `commit_first_seen` populated via:
 ```
@@ -489,6 +581,21 @@ def priority(art, handler) -> int:
 ```
 
 ### 5.6 Budget (Trap 4)
+
+#### 5.6.1 Terminal handlers (always run from reserve)
+```python
+TERMINAL_HANDLERS = {
+    "ExploitRoadmapHandler",      # § 6.2 — strict-mode AI roadmap
+    "ReportWriterHandler",        # writes gitvulture-report.{json,md}
+    "SecretsExporterHandler",     # writes secrets/ folder (§ 5 of pipeline)
+    "GraphDotWriterHandler",      # writes graph.dot for observability
+    "AuditFlushHandler",          # final flush of scope-audit.jsonl
+}
+```
+These are the ONLY handlers permitted to draw from `Budget.report_reserve`.
+Any other handler that attempts to spend from the reserve raises
+`BudgetReserveViolation` and is killed. This guarantees a (partial) report
+even on budget exhaustion (Trap 4).
 
 ```python
 @dataclass
@@ -718,7 +825,18 @@ ExploitRoadmapHandler     *               → terminal, exploit-roadmap.md   [--
 | 3 | Feb 2026 | D1 Smart-HTTP plan | 3 protocol landmines fixed (v2 ls-refs, section state machine, sha256) |
 | 4 | Feb 2026 | C1 SAST plan | 2 blockers fixed (interfile taint, HEAD-only); redundancy + OOB + noise items addressed |
 | 5 | Feb 2026 | Graph refactor | 4 traps fixed (canonical_form, state-as-kind, no atomization, report reserve) |
-| — | Feb 2026 | **This document** | Consolidated spec, architectural surface closed |
+| 6 | Feb 2026 | Verification pass | All 24 decisions verified line-by-line; 0 missing/0 contradicted/0 partial |
+| 7 | Feb 2026 | 5 non-blocking polish items applied: glossary (§0.1), flow diagram (§0.2), `authorize_handler()` (§2.1.1), terminal handlers enumerated (§5.6.1), C8 provenance (§4.5.1) |
+| — | Feb 2026 | **This document** | Consolidated spec, architectural surface CLOSED ✅ |
+
+### 11.1 Quick-wins shipped during consolidation (Round 7+)
+| Item | File | What changed |
+|---|---|---|
+| A2 | `core/reconstructor.py:62` | `git fsck --no-reflogs` → `--reflogs --dangling --lost-found`. Reflog ghosts now surface as dangling. |
+| A6 alias | `cli.py` | Added `--escalate` as no-op alias (escalation already default-on via `--no-escalate` opt-out, but user UX expected the positive flag). |
+| E3 | `secrets/exporter.py` | All files under `secrets/` now chmod 0600 on POSIX; folder 0700. Windows ACLs documented as out-of-scope. |
+| A1 | (no change) | Verified the code already uses non-bare repo (`init_repo` moves `git_dir` to `target/.git`; `_run` uses `cwd=repo_dir`). The earlier doc claim of `git init --bare` was incorrect — code is fine. |
+| A6 (full) | (deferred) | `--offensive` flag already exists (`cli.py:108`). No further change needed beyond the new `--escalate` alias. |
 
 ---
 

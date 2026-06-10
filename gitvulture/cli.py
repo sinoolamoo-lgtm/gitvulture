@@ -99,6 +99,9 @@ def parse_args(argv=None):
                    help="(legacy) Force disable LLM calls — kept for compat")
     p.add_argument("--no-escalate", action="store_true",
                    help="Stop after standard 7-phase scan (skip L1-L16 ladder)")
+    p.add_argument("--escalate", action="store_true",
+                   help="(alias / no-op — escalation runs by default; use "
+                        "--no-escalate to opt out)")
     p.add_argument("--exploit-roadmap", action="store_true",
                    help="After scan, ask Claude (strict-mode, evidence-cited) "
                         "for a ranked exploitation plan. Implies --ai.")

@@ -58,8 +58,14 @@ def reconstruct(git_dir: Path) -> RebuildResult:
     repo_dir = git_dir.parent
     result = RebuildResult(repo_dir=repo_dir)
 
-    # 1. fsck integrity report
-    code, out, err = _run(["git", "fsck", "--full", "--no-reflogs"], repo_dir)
+    # 1. fsck integrity report — keep reflog ghosts (the "dangling" goldmine).
+    #    --reflogs makes git consider every SHA in .git/logs/* when computing
+    #    reachability, so force-pushed / rebased commits show up as dangling
+    #    instead of being silently dropped.
+    code, out, err = _run(
+        ["git", "fsck", "--full", "--reflogs", "--dangling", "--lost-found"],
+        repo_dir,
+    )
     fsck_output = (out + "\n" + err).strip()
     for line in fsck_output.splitlines():
         line = line.strip()

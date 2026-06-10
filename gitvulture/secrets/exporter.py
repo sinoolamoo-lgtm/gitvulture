@@ -21,6 +21,7 @@ their own folder.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from collections import defaultdict
 from dataclasses import asdict
@@ -186,5 +187,25 @@ def export_secrets(
         for p in copied:
             readme.append(f"  - {p}")
     (sec_dir / "README.txt").write_text("\n".join(readme) + "\n", encoding="utf-8")
+
+    # ------------------------------------------------------------ E3: secure perms
+    # Every file under secrets/ may contain raw key material. Lock it down so
+    # it isn't world-readable on multi-user hosts. On Windows os.chmod is a
+    # no-op for the permission bits we care about — Windows ACLs are out of
+    # scope here, document in README that the operator must restrict the
+    # folder themselves.
+    import stat
+    if os.name == "posix":
+        for path in sec_dir.rglob("*"):
+            if path.is_file():
+                try:
+                    path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+                except OSError:
+                    pass
+        try:
+            sec_dir.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)  # 0700
+            files_dir.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR) if files_dir.exists() else None
+        except OSError:
+            pass
 
     return sec_dir
