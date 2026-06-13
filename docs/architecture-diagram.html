@@ -1,0 +1,1023 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>GitVulture · Architecture Diagram</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  /* =========================================================================
+     GitVulture architecture diagram — single-file, no external deps.
+     Theme: dark hacker IDE + subtle 3D depth (CSS transforms + shadows).
+     ========================================================================= */
+  :root {
+    --bg-0:        #07090f;
+    --bg-1:        #0d1019;
+    --bg-2:        #141828;
+    --ink:         #e7ecf7;
+    --ink-dim:     #8d97b3;
+    --line:        rgba(255,255,255,.07);
+    --neon-cyan:   #00e0ff;
+    --neon-green:  #36ff9d;
+    --neon-mag:    #ff43ad;
+    --neon-amber:  #ffb24c;
+    --neon-red:    #ff5560;
+    --neon-purple: #b380ff;
+    --neon-yellow: #ffe14a;
+    --shadow-glow: 0 0 28px;
+    --rad-card:    14px;
+  }
+  * { box-sizing: border-box; margin:0; padding:0; }
+  html, body { background: var(--bg-0); color: var(--ink); font-family:
+    "JetBrains Mono", "Menlo", "Consolas", ui-monospace, monospace;
+    overflow-x:hidden; }
+  body {
+    background:
+      radial-gradient(900px 600px at 12% -10%, rgba(0,224,255,.10), transparent 60%),
+      radial-gradient(800px 600px at 92% 14%, rgba(179,128,255,.10), transparent 60%),
+      radial-gradient(700px 500px at 60% 110%, rgba(255,67,173,.07), transparent 60%),
+      var(--bg-0);
+    min-height:100vh;
+  }
+  ::selection { background: var(--neon-cyan); color:#000; }
+
+  /* ---------- top bar ---------- */
+  header {
+    position: sticky; top:0; z-index:50;
+    backdrop-filter: blur(14px);
+    background: rgba(7,9,15,.78);
+    border-bottom: 1px solid var(--line);
+    padding: 14px 28px;
+    display: flex; align-items:center; gap: 18px; flex-wrap:wrap;
+  }
+  .brand {
+    font-weight: 800; letter-spacing: 1px; font-size: 18px;
+    background: linear-gradient(120deg, var(--neon-cyan), var(--neon-mag));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .brand small {
+    color: var(--ink-dim);
+    font-weight:400; font-size:11px; margin-right: 8px;
+    -webkit-text-fill-color: var(--ink-dim);
+  }
+  .stat {
+    display:flex; flex-direction:column; align-items:center;
+    padding: 4px 12px; border-right: 1px solid var(--line);
+    direction: ltr;
+  }
+  .stat:first-of-type { border-right:none; }
+  .stat .v { font-size: 16px; font-weight:700; color: var(--neon-cyan); }
+  .stat .k { font-size: 10px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 1px; }
+  .filters { margin-inline-start:auto; display:flex; gap:8px; flex-wrap:wrap;}
+  .chip {
+    cursor:pointer; user-select:none;
+    padding: 7px 14px; border-radius: 999px;
+    font-size: 11px; letter-spacing:1px; text-transform:uppercase;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,.02);
+    color: var(--ink-dim); transition: .25s;
+  }
+  .chip:hover { color: var(--ink); background: rgba(255,255,255,.05);}
+  .chip.active { color:#000; font-weight:700; }
+  .chip[data-type=ai].active        { background: var(--neon-purple); }
+  .chip[data-type=existing].active  { background: var(--neon-green);  }
+  .chip[data-type=missing].active   { background: var(--neon-amber);  }
+  .chip[data-type=terminal].active  { background: var(--neon-mag);    }
+  .chip[data-type=io].active        { background: var(--neon-yellow); }
+
+  /* ---------- legend ---------- */
+  section.legend {
+    display:grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 10px; padding: 18px 28px; border-bottom: 1px solid var(--line);
+  }
+  .leg {
+    display:flex; align-items:center; gap:10px;
+    font-size: 12px; color: var(--ink-dim);
+  }
+  .leg .swatch {
+    width:18px; height:18px; border-radius:5px;
+    border: 1px solid rgba(255,255,255,.15);
+  }
+  .swatch.s-existing  { background: linear-gradient(135deg, var(--neon-green), #0a4f2f); }
+  .swatch.s-ai        { background: linear-gradient(135deg, var(--neon-purple), #34155a); }
+  .swatch.s-missing   {
+    background: repeating-linear-gradient(45deg,
+      var(--neon-amber), var(--neon-amber) 4px,
+      transparent 4px, transparent 8px);
+    border-style: dashed; border-color: var(--neon-amber);
+  }
+  .swatch.s-terminal  { background: linear-gradient(135deg, var(--neon-mag), #5c194a); }
+  .swatch.s-io        { background: linear-gradient(135deg, var(--neon-yellow), #5b4a08); }
+  .swatch.s-decision  { background: linear-gradient(135deg, var(--neon-cyan), #053a4a); border-radius: 50%; }
+
+  /* ---------- diagram viewport ---------- */
+  .viewport {
+    perspective: 1800px;
+    padding: 36px 28px 80px;
+    min-height: 80vh;
+  }
+  .canvas {
+    transform-style: preserve-3d;
+    transform: rotateX(2deg) rotateY(-1.2deg);
+    transition: transform .6s ease;
+    will-change: transform;
+  }
+  .canvas:hover { transform: rotateX(0deg) rotateY(0deg); }
+
+  /* ---------- phases (rows) ---------- */
+  .phase {
+    margin-bottom: 56px; position: relative;
+    transform-style: preserve-3d;
+  }
+  .phase-header {
+    display:flex; align-items:center; gap: 14px;
+    margin-bottom: 18px; padding-bottom: 8px;
+    border-bottom: 1px dashed var(--line);
+  }
+  .phase-num {
+    width: 42px; height: 42px; border-radius: 10px;
+    display:flex; align-items:center; justify-content:center;
+    background: linear-gradient(140deg, var(--bg-2), var(--bg-1));
+    color: var(--neon-cyan); font-weight: 800; font-size: 18px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.06),
+                0 6px 14px rgba(0,0,0,.5);
+  }
+  .phase-title {
+    font-size: 18px; font-weight: 700; letter-spacing: .5px;
+  }
+  .phase-sub {
+    color: var(--ink-dim); font-size: 12px; margin-inline-start: 6px;
+    direction: ltr; unicode-bidi: isolate;
+  }
+  .phase-badges { margin-inline-start:auto; display:flex; gap:6px; }
+  .pill {
+    font-size: 9.5px; padding: 3px 8px; border-radius: 999px;
+    text-transform: uppercase; letter-spacing: 1.2px;
+    border: 1px solid rgba(255,255,255,.08);
+    background: rgba(255,255,255,.025);
+    color: var(--ink-dim);
+  }
+  .pill.ai      { color: var(--neon-purple); border-color: var(--neon-purple); }
+  .pill.opt     { color: var(--neon-amber);  border-color: var(--neon-amber); }
+  .pill.default { color: var(--neon-green);  border-color: var(--neon-green); }
+  .pill.missing { color: var(--neon-amber);  border-color: var(--neon-amber);
+                  background: repeating-linear-gradient(45deg,
+                    rgba(255,178,76,.08), rgba(255,178,76,.08) 4px,
+                    transparent 4px, transparent 8px); }
+  .pill.term    { color: var(--neon-mag);    border-color: var(--neon-mag); }
+
+  /* ---------- node grid ---------- */
+  .grid {
+    display:grid; gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(245px, 1fr));
+  }
+  .node {
+    position: relative;
+    background: linear-gradient(155deg, rgba(255,255,255,.04), rgba(255,255,255,.01));
+    border: 1px solid rgba(255,255,255,.07);
+    border-radius: var(--rad-card);
+    padding: 14px 16px;
+    transform-style: preserve-3d;
+    transform: translateZ(0px);
+    transition: transform .35s cubic-bezier(.2,.8,.2,1),
+                box-shadow .35s, border-color .35s;
+    cursor: pointer; overflow: hidden;
+    direction: ltr; text-align: left;
+  }
+  .node::before {
+    /* subtle scanline overlay */
+    content:""; position: absolute; inset:0;
+    background: repeating-linear-gradient(0deg,
+      rgba(255,255,255,.02) 0 1px, transparent 1px 3px);
+    pointer-events: none; opacity:.4;
+  }
+  .node:hover {
+    transform: translateZ(22px) translateY(-3px);
+    border-color: rgba(255,255,255,.20);
+  }
+  .node.existing  { box-shadow: inset -3px 0 0 var(--neon-green); }
+  .node.ai        { box-shadow: inset -3px 0 0 var(--neon-purple); }
+  .node.terminal  { box-shadow: inset -3px 0 0 var(--neon-mag); }
+  .node.io        { box-shadow: inset -3px 0 0 var(--neon-yellow); }
+  .node.missing   {
+    box-shadow: inset -3px 0 0 var(--neon-amber);
+    border-style: dashed; border-color: rgba(255,178,76,.4);
+  }
+  .node:hover.existing  { box-shadow: inset -3px 0 0 var(--neon-green),
+                                       0 12px 30px rgba(54,255,157,.18);}
+  .node:hover.ai        { box-shadow: inset -3px 0 0 var(--neon-purple),
+                                       0 12px 30px rgba(179,128,255,.22);}
+  .node:hover.terminal  { box-shadow: inset -3px 0 0 var(--neon-mag),
+                                       0 12px 30px rgba(255,67,173,.20);}
+  .node:hover.missing   { box-shadow: inset -3px 0 0 var(--neon-amber),
+                                       0 12px 30px rgba(255,178,76,.18);}
+  .node:hover.io        { box-shadow: inset -3px 0 0 var(--neon-yellow),
+                                       0 12px 30px rgba(255,225,74,.18);}
+  .node .id {
+    font-size: 10.5px; letter-spacing: 1.5px;
+    color: var(--ink-dim); text-transform: uppercase;
+  }
+  .node .name {
+    margin-top: 4px; font-size: 14px; font-weight: 700; color: var(--ink);
+  }
+  .node .desc {
+    margin-top: 8px; font-size: 11.5px; line-height: 1.55;
+    color: var(--ink-dim);
+  }
+  .node .tags { margin-top: 10px; display:flex; flex-wrap:wrap; gap:5px;}
+  .node .tag {
+    font-size: 9.5px; padding: 2px 7px; border-radius: 4px;
+    background: rgba(255,255,255,.04); color: var(--ink-dim);
+    border: 1px solid var(--line);
+  }
+  .node .tag.flag   { color: var(--neon-cyan); border-color: rgba(0,224,255,.35); }
+  .node .tag.cost   { color: var(--neon-amber); border-color: rgba(255,178,76,.35); }
+  .node .star {
+    position: absolute; top: 10px; right: 14px;
+    font-size: 11px; color: var(--neon-amber);
+    background: rgba(255,178,76,.12); padding: 2px 7px; border-radius: 999px;
+    border: 1px solid var(--neon-amber);
+  }
+
+  /* ---------- arrows / flow ---------- */
+  .flow-arrow {
+    text-align:center; height: 28px; margin: -10px 0 0;
+    position: relative; pointer-events: none; opacity:.6;
+  }
+  .flow-arrow svg { height: 100%; }
+
+  /* ---------- decision diamond ---------- */
+  .decision {
+    width: 220px; margin: 6px auto 18px; padding: 14px 18px;
+    background: linear-gradient(140deg, rgba(0,224,255,.10), rgba(0,224,255,.02));
+    border: 1px solid var(--neon-cyan); border-radius: 8px;
+    text-align: center; font-size: 12px; color: var(--ink);
+    transform: rotateZ(-1deg);
+    box-shadow: 0 8px 30px rgba(0,224,255,.10);
+    direction: ltr;
+  }
+  .decision strong { color: var(--neon-cyan); }
+  .branch-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+    margin-bottom: 16px;
+  }
+  .branch-row > div { display:flex; flex-direction:column; gap:12px;}
+
+  /* ---------- footer ---------- */
+  footer {
+    margin-top: 60px; padding: 30px 28px 60px;
+    color: var(--ink-dim); font-size: 12px; text-align:center;
+    border-top: 1px solid var(--line);
+  }
+  footer a { color: var(--neon-cyan); text-decoration:none;}
+
+  /* ---------- modal ---------- */
+  .modal-wrap {
+    position: fixed; inset:0; z-index: 99;
+    background: rgba(0,0,0,.6); backdrop-filter: blur(8px);
+    display:none; align-items:center; justify-content:center;
+    padding: 20px;
+  }
+  .modal-wrap.open { display:flex; animation: fadeIn .25s; }
+  .modal {
+    max-width: 640px; width: 100%;
+    background: linear-gradient(160deg, var(--bg-2), var(--bg-1));
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 16px; padding: 30px;
+    box-shadow: 0 40px 80px rgba(0,0,0,.6),
+                inset 0 0 0 1px rgba(255,255,255,.04);
+  }
+  .modal h3 {
+    font-size: 22px; margin-bottom: 6px;
+    background: linear-gradient(120deg, var(--neon-cyan), var(--neon-mag));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .modal .modal-id {
+    color: var(--ink-dim); font-size: 11px; letter-spacing: 2px;
+    text-transform: uppercase; margin-bottom: 16px;
+  }
+  .modal p { font-size: 13.5px; line-height: 1.7; color: var(--ink);
+             direction: ltr; text-align: left; }
+  .modal .close {
+    margin-top: 22px; cursor:pointer;
+    border: 1px solid var(--neon-cyan); background: transparent;
+    color: var(--neon-cyan); padding: 8px 20px; border-radius: 6px;
+    font-family: inherit; font-size: 12px; letter-spacing: 2px;
+  }
+  .modal .close:hover { background: var(--neon-cyan); color:#000;}
+
+  @keyframes fadeIn { from {opacity:0;} to {opacity:1;} }
+
+  /* hide nodes filtered out */
+  .node.hidden { display:none; }
+  .phase.empty-phase { opacity:.25; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    GitVulture
+    <small>v1.0 · production-ready</small>
+  </div>
+  <div class="stat"><span class="v">120</span><span class="k">unit tests</span></div>
+  <div class="stat"><span class="v">15+</span><span class="k">feature modules</span></div>
+  <div class="stat"><span class="v">16</span><span class="k">escalation stages</span></div>
+  <div class="stat"><span class="v">9</span><span class="k">graph handlers</span></div>
+  <div class="stat"><span class="v">2</span><span class="k">orchestrators</span></div>
+  <div class="filters" id="filters">
+    <span class="chip active" data-type="all">All</span>
+    <span class="chip active" data-type="existing">Existing</span>
+    <span class="chip active" data-type="ai">AI-Powered</span>
+    <span class="chip active" data-type="terminal">Terminal</span>
+    <span class="chip active" data-type="io">HTTP/IO</span>
+    <span class="chip active" data-type="missing">⭐ Missing</span>
+  </div>
+</header>
+
+<section class="legend">
+  <div class="leg"><span class="swatch s-existing"></span> Existing operation (working &amp; tested)</div>
+  <div class="leg"><span class="swatch s-ai"></span> AI-powered (Claude / Strict-Mode)</div>
+  <div class="leg"><span class="swatch s-terminal"></span> Terminal handler (always runs)</div>
+  <div class="leg"><span class="swatch s-io"></span> HTTP / Network I/O</div>
+  <div class="leg"><span class="swatch s-missing"></span> ⭐ Missing — suggested for future</div>
+  <div class="leg"><span class="swatch s-decision"></span> Decision branch</div>
+</section>
+
+<div class="viewport">
+  <div class="canvas" id="canvas">
+    <!-- ====================================================================
+         PHASE 0 — CLI startup
+         ==================================================================== -->
+    <div class="phase" data-phase="0">
+      <div class="phase-header">
+        <div class="phase-num">0</div>
+        <div class="phase-title">CLI Startup &amp; Pre-flight</div>
+        <span class="phase-sub">argument parsing, scope contract, environment</span>
+        <div class="phase-badges">
+          <span class="pill default">always</span>
+        </div>
+      </div>
+      <div class="grid"></div>
+    </div>
+
+    <!-- decision: special commands? -->
+    <div class="flow-arrow"><svg viewBox="0 0 20 20" width="22"><path d="M10 2 L10 18 M5 13 L10 18 L15 13" stroke="rgba(255,255,255,.4)" stroke-width="1.5" fill="none"/></svg></div>
+    <div class="decision">
+      <strong>Branch:</strong> special command?<br>
+      <span style="color:var(--ink-dim)">--doctor / --list-targets / --interactive / --resume</span>
+    </div>
+
+    <div class="branch-row">
+      <div>
+        <div class="phase" data-phase="0b">
+          <div class="phase-header">
+            <div class="phase-num" style="background:linear-gradient(140deg,#1a2a3a,#0d1929);color:var(--neon-yellow);">~</div>
+            <div class="phase-title">Pre-scan utilities</div>
+            <div class="phase-badges"><span class="pill default">opt</span></div>
+          </div>
+          <div class="grid"></div>
+        </div>
+      </div>
+      <div>
+        <div class="phase" data-phase="0c">
+          <div class="phase-header">
+            <div class="phase-num" style="background:linear-gradient(140deg,#2a1a3a,#1d0d29);color:var(--neon-purple);">↻</div>
+            <div class="phase-title">Resume / Graph mode</div>
+            <div class="phase-badges"><span class="pill default">opt</span></div>
+          </div>
+          <div class="grid"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====================================================================
+         PHASE 1 — P1 Recon
+         ==================================================================== -->
+    <div class="flow-arrow"><svg viewBox="0 0 20 20" width="22"><path d="M10 2 L10 18 M5 13 L10 18 L15 13" stroke="rgba(255,255,255,.4)" stroke-width="1.5" fill="none"/></svg></div>
+    <div class="phase" data-phase="1">
+      <div class="phase-header">
+        <div class="phase-num">1</div>
+        <div class="phase-title">P1 · Reconnaissance</div>
+        <span class="phase-sub">probe .git exposure + soft-404 calibration</span>
+        <div class="phase-badges"><span class="pill default">always</span></div>
+      </div>
+      <div class="grid"></div>
+    </div>
+
+    <!-- ====================================================================
+         PHASE 2 — P2 Ref Discovery + D1 Smart-HTTP
+         ==================================================================== -->
+    <div class="flow-arrow"><svg viewBox="0 0 20 20" width="22"><path d="M10 2 L10 18 M5 13 L10 18 L15 13" stroke="rgba(255,255,255,.4)" stroke-width="1.5" fill="none"/></svg></div>
+    <div class="phase" data-phase="2">
+      <div class="phase-header">
+        <div class="phase-num">2</div>
+        <div class="phase-title">P2 · Reference Discovery</div>
+        <span class="phase-sub">enumerate refs, reflog mining, smart-HTTP probing</span>
+        <div class="phase-badges"><span class="pill default">always</span></div>
+      </div>
+      <div class="grid"></div>
+    </div>
+
+    <!-- ====================================================================
+         PHASE 3 — P3 Object Acquisition
+         ==================================================================== -->
+    <div class="flow-arrow"><svg viewBox="0 0 20 20" width="22"><path d="M10 2 L10 18 M5 13 L10 18 L15 13" stroke="rgba(255,255,255,.4)" stroke-width="1.5" fill="none"/></svg></div>
+    <div class="phase" data-phase="3">
+      <div class="phase-header">
+        <div class="phase-num">3</div>
+        <div class="phase-title">P3 · Object Acquisition (BFS)</div>
+        <span class="phase-sub">packs (mod_autoindex) + loose + zlib decompress</span>
+        <div class="phase-badges"><span class="pill default">always</span></div>
+      </div>
+      <div class="grid"></div>
+    </div>
+
+    <!-- ====================================================================
+         PHASE 4 — P4 Reconstruction
+         ==================================================================== -->
+    <div class="flow-arrow"><svg viewBox="0 0 20 20" width="22"><path d="M10 2 L10 18 M5 13 L10 18 L15 13" stroke="rgba(255,255,255,.4)" stroke-width="1.5" fill="none"/></svg></div>
+    <div class="phase" data-phase="4">
+      <div class="phase-header">
+        <div class="phase-num">4</div>
+        <div class="phase-title">P4 · Repo Reconstruction</div>
+        <span class="phase-sub">init repo, fsck --reflogs, branch walk, checkout HEAD</span>
+        <div class="phase-badges"><span class="pill default">always</span></div>
+      </div>
+      <div class="grid"></div>
+    </div>
+
+    <!-- ====================================================================
+         PHASE 5 — Hunting & Analysis (parallel)
+         ==================================================================== -->
+    <div class="flow-arrow"><svg viewBox="0 0 20 20" width="22"><path d="M10 2 L10 18 M5 13 L10 18 L15 13" stroke="rgba(255,255,255,.4)" stroke-width="1.5" fill="none"/></svg></div>
+    <div class="phase" data-phase="5">
+      <div class="phase-header">
+        <div class="phase-num">5</div>
+        <div class="phase-title">P5 · Secret Hunt &amp; Static Analysis</div>
+        <span class="phase-sub">23-rule regex sweep + dangling commits + SAST</span>
+        <div class="phase-badges"><span class="pill default">core</span></div>
+      </div>
+      <div class="grid"></div>
+    </div>
+
+    <!-- ====================================================================
+         PHASE 6 — Discovery & Pivots (mostly opt-in)
+         ==================================================================== -->
+    <div class="flow-arrow"><svg viewBox="0 0 20 20" width="22"><path d="M10 2 L10 18 M5 13 L10 18 L15 13" stroke="rgba(255,255,255,.4)" stroke-width="1.5" fill="none"/></svg></div>
+    <div class="phase" data-phase="6">
+      <div class="phase-header">
+        <div class="phase-num">6</div>
+        <div class="phase-title">P6 · Discovery, Pivots &amp; Live Diff</div>
+        <span class="phase-sub">endpoints, origin, CI/CD, JWT, submodules, WebDAV</span>
+        <div class="phase-badges"><span class="pill default">core</span><span class="pill opt">+opt-in</span></div>
+      </div>
+      <div class="grid"></div>
+    </div>
+
+    <!-- ====================================================================
+         PHASE 7 — Escalation L1-L16
+         ==================================================================== -->
+    <div class="flow-arrow"><svg viewBox="0 0 20 20" width="22"><path d="M10 2 L10 18 M5 13 L10 18 L15 13" stroke="rgba(255,255,255,.4)" stroke-width="1.5" fill="none"/></svg></div>
+    <div class="phase" data-phase="7">
+      <div class="phase-header">
+        <div class="phase-num">7</div>
+        <div class="phase-title">P7 · Escalation Engine (L1 → L16)</div>
+        <span class="phase-sub">16 stages, ~800 path probes, WAF/403 bypass library</span>
+        <div class="phase-badges"><span class="pill default">on</span><span class="pill opt">--no-escalate</span></div>
+      </div>
+      <div class="grid"></div>
+    </div>
+
+    <!-- ====================================================================
+         PHASE 8 — AI
+         ==================================================================== -->
+    <div class="flow-arrow"><svg viewBox="0 0 20 20" width="22"><path d="M10 2 L10 18 M5 13 L10 18 L15 13" stroke="rgba(255,255,255,.4)" stroke-width="1.5" fill="none"/></svg></div>
+    <div class="phase" data-phase="8">
+      <div class="phase-header">
+        <div class="phase-num">8</div>
+        <div class="phase-title">P8 · AI Triage &amp; Exploit Roadmap</div>
+        <span class="phase-sub">Claude Sonnet 4.5 · Strict-Mode anti-hallucination</span>
+        <div class="phase-badges">
+          <span class="pill ai">🤖 ai-only</span>
+          <span class="pill opt">--ai / --exploit-roadmap</span>
+        </div>
+      </div>
+      <div class="grid"></div>
+    </div>
+
+    <!-- ====================================================================
+         PHASE 9 — Reporting (terminal)
+         ==================================================================== -->
+    <div class="flow-arrow"><svg viewBox="0 0 20 20" width="22"><path d="M10 2 L10 18 M5 13 L10 18 L15 13" stroke="rgba(255,255,255,.4)" stroke-width="1.5" fill="none"/></svg></div>
+    <div class="phase" data-phase="9">
+      <div class="phase-header">
+        <div class="phase-num">9</div>
+        <div class="phase-title">P9 · Reporting (Terminal Handlers)</div>
+        <span class="phase-sub">always run — budget reserve guarantees output</span>
+        <div class="phase-badges"><span class="pill term">terminal</span></div>
+      </div>
+      <div class="grid"></div>
+    </div>
+
+    <!-- ====================================================================
+         PHASE 10 — Missing / future
+         ==================================================================== -->
+    <div class="flow-arrow"><svg viewBox="0 0 20 20" width="22"><path d="M10 2 L10 18 M5 13 L10 18 L15 13" stroke="rgba(255,178,76,.5)" stroke-width="1.5" fill="none"/></svg></div>
+    <div class="phase" data-phase="10">
+      <div class="phase-header">
+        <div class="phase-num" style="background:linear-gradient(140deg,#3a2a1a,#291d0d);color:var(--neon-amber);">★</div>
+        <div class="phase-title">⭐ Missing / Suggested Operations</div>
+        <span class="phase-sub">prioritized backlog — not yet implemented</span>
+        <div class="phase-badges"><span class="pill missing">backlog</span></div>
+      </div>
+      <div class="grid"></div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  Built for <span style="color:var(--neon-cyan)">GitVulture v1.0</span> ·
+  hover nodes for 3D effect · click for details · use the filter chips above to slice by category.<br>
+  <span style="color:var(--ink-dim)">120/120 tests · ARCHITECTURE.md §§1–11 fully implemented · Round 13 complete</span>
+</footer>
+
+<div class="modal-wrap" id="modal">
+  <div class="modal">
+    <div class="modal-id" id="m-id"></div>
+    <h3 id="m-name"></h3>
+    <p id="m-desc"></p>
+    <button class="close" onclick="closeModal()">CLOSE [ESC]</button>
+  </div>
+</div>
+
+<script>
+/* =========================================================================
+   Node catalogue — every operation in GitVulture, organized by phase.
+   type:  existing | ai | terminal | io | missing
+   ========================================================================= */
+const NODES = [
+  /* ===================================== PHASE 0 — CLI startup ============= */
+  { p:0, id:"CLI",      type:"existing", name:"argparse +50 flags",
+    desc:"38 boolean flags + 12 typed args. Pre-parsed in `cli.py::build_parser`. Handles ScopeContract construction, output_dir resolution, env overrides.",
+    tags:["argparse","cli.py"]},
+  { p:0, id:"SIG_IGN",  type:"existing", name:"SIGUSR1 = SIG_IGN at boot",
+    desc:"Installed at the top of cli.py so the process can't terminate from a stray SIGUSR1 before the Worklist binds the real dump handler. Critical for §5.10 observability.",
+    tags:["signals","§5.10"]},
+  { p:0, id:"ENV",      type:"existing", name:"Env loader (.env)",
+    desc:"Reads EMERGENT_LLM_KEY from ~/.gitvulture/.env or env vars before any AI module is touched. Falls back to anonymous mode if absent.",
+    tags:["env"]},
+  { p:0, id:"SCOPE",    type:"existing", name:"ScopeGuard (E1)",
+    desc:"Two-tier safety gate. URL bounds-check (host:port allowlist), authorize_handler() pre-check (§2.1.1), audit JSONL of every allowed/denied request. Requires --i-have-permission.",
+    tags:["E1","scope_guard.py"]},
+  { p:0, id:"LOG",      type:"existing", name:"Live logger + heartbeat",
+    desc:"sqlmap-style verbose output with stdout flushing for Windows. 2-second heartbeat ticker (req count, ok, bypass, obj count, elapsed). Supports --plain, --no-color, --json-log, --log-file.",
+    tags:["logger.py","--plain"]},
+  { p:0, id:"OUTDIR",   type:"existing", name:"Output dir mgmt",
+    desc:"Creates ~/.gitvulture/output/<host>/<timestamp>/ with subdirs: recovered_source/, secrets/, sast/, .git/. Custom path via -o.",
+    tags:["storage.py","-o"]},
+
+  /* ============================ Pre-scan utilities (branch A) ============== */
+  { p:"0b", id:"DOCTOR",    type:"existing", name:"--doctor",
+    desc:"Self-diagnostic: Python version, terminal capabilities (color, ANSI, stdin), httpx/dulwich/semgrep availability, write permissions, network reachability of common targets. Used for Windows TTY troubleshooting.",
+    tags:["--doctor"]},
+  { p:"0b", id:"LIST",      type:"existing", name:"--list-targets",
+    desc:"Print recent scan history with phase, exposure, findings count.",
+    tags:["--list-targets"]},
+  { p:"0b", id:"INT",       type:"existing", name:"--interactive (TUI)",
+    desc:"Rich-based interactive shell. Lets users browse past scans, drill into findings, replay an audit JSONL, configure scopes via Q&A.",
+    tags:["interactive.py","--interactive"]},
+
+  /* ============================ Graph mode / resume (branch B) ============= */
+  { p:"0c", id:"GRAPH",   type:"existing", name:"--graph",
+    desc:"Routes the scan through the Worklist scheduler (§5) instead of the linear orchestrator. Same artifacts, but with canonical-form identity, deterministic priority, terminal budget reserve, audit JSONL replay.",
+    tags:["--graph","§5"]},
+  { p:"0c", id:"RESUME",  type:"existing", name:"--resume <DIR>",
+    desc:"§5.11 — loads <DIR>/.checkpoint.json (chmod 0600), restores seen_artifacts + visited + queue + budget_spent. Warm restore in 0.1s vs cold scan ~12.8s.",
+    tags:["--resume","§5.11"]},
+  { p:"0c", id:"USR1",    type:"existing", name:"SIGUSR1 live dump",
+    desc:"§5.10 — `kill -USR1 <pid>` during a scan prints {queue_size, in_flight, budget_pct, top10, transitions, stopping} to stderr and appends `sigusr1_dump` to graph-audit.jsonl. Unique observability feature.",
+    tags:["--graph","§5.10","SIGUSR1"]},
+
+  /* ===================================== PHASE 1 — Recon =================== */
+  { p:1, id:"PROBE",    type:"existing", name:".git/HEAD probe",
+    desc:"GETs /.git/HEAD, /.git/config, /.git/description, /.git/info/exclude. Detects mod_autoindex listing. Header analysis: Server, X-Powered-By, ETag drift.",
+    tags:["recon.py","P1"]},
+  { p:1, id:"CALIB",    type:"existing", name:"soft-404 calibration",
+    desc:"Fires 3 random unguessable paths to learn the 404 fingerprint (size, body hash, status). Future probes use Jaro–Winkler similarity (>0.92) to suppress false positives. ARCHITECTURE.md §1.3.",
+    tags:["§1.3"]},
+  { p:1, id:"WAF",      type:"existing", name:"WAF / CDN detection",
+    desc:"Identifies Cloudflare, AWS WAF, Akamai, Incapsula via headers + body sigs. Activates the bypass library (D4) for subsequent requests. waf_profile artifact in graph mode.",
+    tags:["recon.py"]},
+  { p:1, id:"HEAD-PARSE", type:"existing", name:"HEAD parser",
+    desc:"Extracts branch name (refs/heads/master) and any symbolic ref chain. Surfaces detached-HEAD scenarios.",
+    tags:["recon.py"]},
+  { p:1, id:"ETAG",     type:"missing",  name:"⭐ ETag / Last-Modified entropy",
+    desc:"Use response ETags + Last-Modified headers to fingerprint commit SHAs server-side without downloading. Could 10x recon speed on huge repos.",
+    tags:["future"]},
+  { p:1, id:"DNS",      type:"missing",  name:"⭐ DNS / ASN recon",
+    desc:"Resolve target → IPs → ASN → reverse DNS + neighbouring IPs for origin-bypass candidates. Currently delegated to D2 (crt.sh only).",
+    tags:["future"]},
+
+  /* ===================================== PHASE 2 — Ref discovery =========== */
+  { p:2, id:"REFS",     type:"existing", name:"refs/* walker",
+    desc:"GETs /.git/refs/heads/*, /.git/refs/tags/*, /.git/refs/remotes/*. Brute-forces common branch names (master, develop, dev, staging, prod). Uses bypass_library if 403/404.",
+    tags:["ref_discovery.py"]},
+  { p:2, id:"PACKED",   type:"existing", name:"packed-refs parser",
+    desc:"Downloads /.git/packed-refs, parses every SHA → ref-name pair, follows peeled annotated tags. Often the single source of all commit SHAs.",
+    tags:["P2"]},
+  { p:2, id:"REFLOG",   type:"existing", name:"reflog mining",
+    desc:"GETs /.git/logs/HEAD + /.git/logs/refs/**. Extracts OLD_SHA → NEW_SHA transitions → recovers SHAs of force-pushed / amended commits that are no longer reachable from any ref.",
+    tags:["P2","high-value"]},
+  { p:2, id:"INFO-REFS",type:"existing", name:"/info/refs (dumb HTTP)",
+    desc:"Reads the dumb-HTTP advertisement, extracting all refs in one shot when present.",
+    tags:["P2"]},
+  { p:2, id:"D1",       type:"existing", name:"D1 · Smart-HTTP clone",
+    desc:"Probes /info/refs?service=git-upload-pack (v1 + v2). If the server lets it through, asks for a full clone like a normal git client — bypasses missing autoindex entirely. ARCHITECTURE.md §D1.",
+    tags:["smart_http.py","D1"]},
+  { p:2, id:"DULWICH",  type:"existing", name:"dulwich fetch fallback",
+    desc:"When smart-HTTP works, dulwich is invoked client-side to negotiate the want/have set, mirroring `git clone --bare`.",
+    tags:["D1"]},
+  { p:2, id:"FORCE-PUSH", type:"missing", name:"⭐ Force-push reconstructor",
+    desc:"Dedicated module that walks reflog `OLD_SHA → NEW_SHA` chains and replays the orphaned tree at each old_sha. Currently we collect them, but reconstruction is best-effort.",
+    tags:["future"]},
+
+  /* ===================================== PHASE 3 — Object acquisition ====== */
+  { p:3, id:"PACK-INFO",type:"existing", name:"info/packs strategy",
+    desc:"Primary: reads /.git/objects/info/packs to learn pack filenames.",
+    tags:["object_engine.py"]},
+  { p:3, id:"PACK-LIST",type:"existing", name:"mod_autoindex listing fallback",
+    desc:"NEW: when info/packs is 404, scrape /.git/objects/pack/ HTML listing for pack-<sha>.pack with a pure regex. Works for Apache + nginx. This is exactly what unlocked the Stage 1 lab — without it, object_count = 0.",
+    tags:["object_engine.py","2026-02 fix"]},
+  { p:3, id:"PACK-DL",  type:"io", name:"pack .idx + .pack download",
+    desc:"Streams the .idx first (small) to enumerate object SHAs, then the .pack (often MBs). Resume support via Range headers when CDN allows.",
+    tags:["P3","io"]},
+  { p:3, id:"IDX-V2",   type:"existing", name:"idx-v2 binary parser",
+    desc:"Pure-Python parser for the pack index v2 format. Extracts the full 256-fanout SHA list, offsets, CRC32s, and large-object 64-bit offsets.",
+    tags:["index_parser.py"]},
+  { p:3, id:"LOOSE",    type:"existing", name:"loose-object BFS",
+    desc:"For SHAs not in any pack, GET /.git/objects/aa/bbcc… directly. zlib-decompresses then parses commit/tree/blob/tag headers.",
+    tags:["object_engine.py"]},
+  { p:3, id:"BFS",      type:"existing", name:"BFS expansion (max-rounds=10)",
+    desc:"Frontier: refs ∪ reflog_old_commits ∪ pack_shas. Each commit → parent SHAs + tree SHA. Each tree → child blob/tree SHAs. Repeats up to 10 rounds or until quiescence.",
+    tags:["object_engine.py","§5.8"]},
+  { p:3, id:"OBJ-CACHE",type:"existing", name:"local object cache",
+    desc:"Writes everything into output_dir/.git/objects/{loose,pack}/. Becomes a real bare git repo that the user can `git clone` from.",
+    tags:["P3"]},
+  { p:3, id:"DELTA",    type:"missing",  name:"⭐ Delta-resolve verifier",
+    desc:"After pack download, run an internal `git fsck` equivalent to confirm every delta resolves. Surface corruption immediately rather than at P4.",
+    tags:["future"]},
+  { p:3, id:"PART-PACK",type:"missing",  name:"⭐ Partial-pack hunting",
+    desc:"Some servers expose `pack-*.pack.{1,2,3}` partials from interrupted git-gc. Detect and stitch.",
+    tags:["future"]},
+
+  /* ===================================== PHASE 4 — Reconstruction ========== */
+  { p:4, id:"INIT",     type:"existing", name:"git repo init",
+    desc:"Programmatically initializes output_dir/.git via dulwich and stitches in our downloaded packs.",
+    tags:["reconstructor.py","P4"]},
+  { p:4, id:"FSCK",     type:"existing", name:"git fsck --reflogs --no-reflogs",
+    desc:"Runs both modes to detect dangling commits + dangling blobs. Powers the secret-hunt's high-value 'orphan history' search.",
+    tags:["P4"]},
+  { p:4, id:"WALK",     type:"existing", name:"branch walker",
+    desc:"For every ref + every dangling commit, walks the tree → checks out files into recovered_source/. Multiple worktree merge with last-write-wins.",
+    tags:["P4"]},
+  { p:4, id:"CHECKOUT", type:"existing", name:"HEAD checkout to disk",
+    desc:"Restores the working tree as the developer saw it at the last commit on the default branch. Symlinks, executables, submodules pointers all preserved.",
+    tags:["P4"]},
+  { p:4, id:"DANGLING", type:"existing", name:"dangling commit replay",
+    desc:"Each orphaned commit gets its full tree materialized into recovered_source/<sha-short>/ — exposes deleted secrets.",
+    tags:["P4","high-value"]},
+  { p:4, id:"LFS",      type:"missing",  name:"⭐ Git-LFS pointer chase",
+    desc:"When trees contain LFS pointer files, follow `version https://git-lfs/...` URLs to download the actual blobs. Currently we just save the pointer.",
+    tags:["future"]},
+  { p:4, id:"SUBMOD-CLONE", type:"missing",  name:"⭐ Submodule auto-clone",
+    desc:"For each .gitmodules entry, attempt to recursively clone the referenced public-Git submodule. Surfaces deep dependency-confusion paths.",
+    tags:["future"]},
+
+  /* ===================================== PHASE 5 — Hunt + SAST ============= */
+  { p:5, id:"PATTERNS", type:"existing", name:"23-rule regex sweep",
+    desc:"Patterns for AWS, GCP, Azure, Stripe, PayPal, SendGrid, Twilio, Slack, GitHub PAT, GitLab, OpenAI, Anthropic, Google API, private keys (RSA/EC/Ed25519/PuTTY), JWTs, generic high-entropy. ARCHITECTURE.md §3.",
+    tags:["secrets/patterns.py","23 rules"]},
+  { p:5, id:"WALKER",   type:"existing", name:"git_walker.py",
+    desc:"Iterates every blob in every commit + every dangling object. Streams content through the patterns. Annotates findings with file path, line, commit SHA, author, date.",
+    tags:["secrets/git_walker.py"]},
+  { p:5, id:"VERIFY",   type:"existing", name:"--verify-secrets",
+    desc:"For supported providers (AWS GetCallerIdentity, GitHub /user, Stripe /balance, Slack auth.test, etc.) makes a single authenticated call to confirm validity. Records verified vs revoked.",
+    tags:["secrets/verifier.py","--verify-secrets"]},
+  { p:5, id:"EXPORTER", type:"existing", name:"secrets exporter",
+    desc:"Writes the dedicated secrets/ folder: README.txt, secrets.json (redacted), files/<rule>/<sha-short>.txt with raw matches, ready for the user to test.",
+    tags:["secrets/exporter.py"]},
+  { p:5, id:"C1",       type:"existing", name:"C1 · SAST (semgrep)",
+    desc:"Auto-installs semgrep if missing. Runs OWASP-mobile, default + custom rule packs over recovered_source/. Outputs sast/*.json + sast-report.md. Wired as SastHandler in graph mode.",
+    tags:["sast/__init__.py","C1","--no-sast"]},
+  { p:5, id:"ENTROPY", type:"missing",  name:"⭐ Shannon-entropy second pass",
+    desc:"After regex finds nothing, scan all blobs for high-entropy strings (>4.5 bits/char) bigger than 20 chars. Catches secrets that don't match any known prefix.",
+    tags:["future"]},
+  { p:5, id:"BINARY",   type:"missing",  name:"⭐ Binary string extractor",
+    desc:"For .so/.exe/.dll blobs in history, run `strings`-equivalent to surface hard-coded URLs and tokens.",
+    tags:["future"]},
+
+  /* ===================================== PHASE 6 — Discovery & pivots ====== */
+  { p:6, id:"L3",       type:"existing", name:"L3 · Endpoint discovery",
+    desc:"Mines recovered_source/ for routes: sourcemap files (.js.map), robots.txt, sitemap.xml, OpenAPI/Swagger specs, Postman collections, hard-coded fetch() URLs.",
+    tags:["endpoint_discovery.py","L3"]},
+  { p:6, id:"C8",       type:"existing", name:"C8 · Live source diff",
+    desc:"For every endpoint, fetches the live response and diffs against the source-tree expectation. Flags removed-but-still-routed endpoints (often forgotten admin panels).",
+    tags:["live_diff.py","C8"]},
+  { p:6, id:"D2",       type:"existing", name:"D2 · Origin discovery (crt.sh)",
+    desc:"Queries Certificate Transparency for sister hostnames of the target. Probes each one + computes simhash similarity to the original — high-sim hits are likely WAF-bypass origins.",
+    tags:["origin_finder.py","D2","--graph-origin-finder"]},
+  { p:6, id:"C6",       type:"existing", name:"C6 · CI/CD secrets",
+    desc:"Parses 7 platforms (GitHub Actions, GitLab CI, CircleCI, Bitbucket, Jenkins, Travis, Azure Pipelines). Extracts inline literals, secret refs, OIDC `id-token: write` + audience claims for cloud takeover.",
+    tags:["cicd_secrets.py","C6","--no-cicd-secrets"]},
+  { p:6, id:"C7",       type:"existing", name:"C7 · JWT forge",
+    desc:"Scans repo + assets for JWT-shaped tokens. For each: alg:none forge attempt, weak HS256 cracking with built-in 10k secrets dictionary + git-blame mining for in-repo secrets.",
+    tags:["jwt_forge.py","C7","--no-jwt-forge"]},
+  { p:6, id:"C3",       type:"existing", name:"C3 · Cloud enum",
+    desc:"For each verified AWS/GCP/Azure key, calls IAM/STS/Roles API to enumerate permissions, list buckets, list functions. Cross-account confused-deputy detection.",
+    tags:["cloud_enum.py","C3","--cloud-enum"]},
+  { p:6, id:"C9",       type:"existing", name:"C9 · Git pivots",
+    desc:"Reads .gitmodules + .gitconfig + .npmrc + remote URLs. Discovers private-tenant hostnames + alternative repo URLs. Adds them as `host` artifacts in graph mode for lateral pivoting.",
+    tags:["git_pivots.py","C9","--no-git-pivots"]},
+  { p:6, id:"D10",      type:"existing", name:"D10 · WebDAV probe",
+    desc:"OPTIONS + PROPFIND + MKCOL probes. Detects misconfigured WebDAV (PUT enabled, MKCOL allowed, anonymous read).",
+    tags:["webdav.py","D10","--webdav"]},
+  { p:6, id:"D4",       type:"existing", name:"D4 · Path bypass library",
+    desc:"~30 normalization tricks: /.git/HEAD;jsessionid, /.GIT/HEAD, /%2egit/HEAD, /.git%00, /.git/./HEAD, /.git/../.git/HEAD, /.git//HEAD, …  Used by every probe automatically when the first attempt 403/404s.",
+    tags:["bypass_library.py","D4"]},
+  { p:6, id:"S3",       type:"existing", name:"S3-bucket harvester",
+    desc:"--s3-bucket flag harvests AWS S3 bucket names from sources: env vars, HTML, JSON manifest, etc. Then probes each for public ACLs.",
+    tags:["s3_enum.py","--s3-bucket"]},
+  { p:6, id:"L1L16-LIGHT", type:"existing", name:"L1-L16 light variants (parallel)",
+    desc:"Subset of escalation runs in parallel with P6 to save total scan time (path bypass, common file lookups, fast probes).",
+    tags:["escalation.py"]},
+  { p:6, id:"SQLI",       type:"existing", name:"sqli passive probe",
+    desc:"Detects boolean-based + error-based SQL injection signatures in live diff responses. Passive only — no payloads fired without --offensive.",
+    tags:["sqli_probe.py","--offensive"]},
+  { p:6, id:"CRYPTO",   type:"existing", name:"crypto_attack module",
+    desc:"Pure cryptanalysis: weak nonce reuse, hash-collision pairs, plain-text encryption keys in source.",
+    tags:["crypto_attack.py"]},
+  { p:6, id:"AGGRO",    type:"existing", name:"aggressive.py module",
+    desc:"With --offensive: enables intrusive probes (rate-limit-aware DoS proxy enum, sub-path brute-force at higher rate).",
+    tags:["aggressive.py","--offensive"]},
+  { p:6, id:"GRAPHQL",  type:"missing",  name:"⭐ GraphQL introspection",
+    desc:"When endpoints contain /graphql, run an introspection query + schema diff against source-tree schema. Hidden mutations are top-tier findings.",
+    tags:["future"]},
+  { p:6, id:"GRPC",     type:"missing",  name:"⭐ gRPC reflection probe",
+    desc:"Detect h2c / grpc-web; use server-reflection if enabled; emit `endpoint` artifacts.",
+    tags:["future"]},
+  { p:6, id:"WS",       type:"missing",  name:"⭐ WebSocket fingerprint",
+    desc:"Connect-and-listen probe for ws:// & wss:// endpoints in the source map.",
+    tags:["future"]},
+  { p:6, id:"AGENTS-MD",type:"missing",  name:"⭐ AGENTS.md / .cursor harvester",
+    desc:"Parse AI-IDE config files (.cursorrules, AGENTS.md, .aider.conf.yml) for leaked prompts containing internal endpoints / credentials.",
+    tags:["future"]},
+
+  /* ===================================== PHASE 7 — Escalation L1-L16 ====== */
+  { p:7, id:"L1",       type:"existing", name:"L1 · Common files (~80 paths)",
+    desc:".env, .npmrc, .pypirc, .htpasswd, .htaccess, web.config, app.yaml, settings.py, secrets.yml, etc.",
+    tags:["escalation_data.py","L1"]},
+  { p:7, id:"L2",       type:"existing", name:"L2 · Cloud metadata (~30)",
+    desc:"AWS IMDSv2 indirect SSRF candidates, GCP /computeMetadata, Azure /metadata. Only reports endpoints — no actual exploit.",
+    tags:["L2"]},
+  { p:7, id:"L4",       type:"existing", name:"L4 · Backup file extensions",
+    desc:".bak/.swp/.old/.orig/.rej for every recovered filename. ~3000 probes via D4 bypass library variants.",
+    tags:["L4"]},
+  { p:7, id:"L5-L8",    type:"existing", name:"L5-L8 · Web dev artefacts",
+    desc:"phpinfo, /vendor/, /node_modules/, /.idea/, /.vscode/, debug=true query params, X-Forwarded-* header inject probes.",
+    tags:["L5-L8"]},
+  { p:7, id:"L9-L12",   type:"existing", name:"L9-L12 · Authentication leaks",
+    desc:"/auth/debug, /login?dump=1, password-reset flow inspection, SAML metadata, OAuth client_id discovery.",
+    tags:["L9-L12"]},
+  { p:7, id:"L13-L16",  type:"existing", name:"L13-L16 · Late-stage pivots",
+    desc:"Final aggregation, cross-correlation, dedup of findings, prep for AI roadmap. Strict-mode validators run here.",
+    tags:["L13-L16"]},
+  { p:7, id:"WAFBP",    type:"existing", name:"D4 bypass auto-rotate",
+    desc:"Every L-stage probe wraps in D4 bypass attempts before declaring NOT FOUND.",
+    tags:["bypass_library.py"]},
+  { p:7, id:"PROXY",    type:"existing", name:"--proxy / --proxy-list / --rotate-ua",
+    desc:"Single proxy, round-robin proxy list, User-Agent rotation. Survives bans by switching identities every N requests.",
+    tags:["--proxy"]},
+  { p:7, id:"AUTH",     type:"existing", name:"--auth / --cookies / -H",
+    desc:"Bearer tokens, custom cookies, extra headers. Lets the engine probe auth-walled portions of the site.",
+    tags:["--auth"]},
+  { p:7, id:"TOR",      type:"missing",  name:"⭐ Tor / chained-proxy",
+    desc:"--via-tor flag that auto-launches a SOCKS5 tor session and routes all requests through it. Chained proxies for OPSEC.",
+    tags:["future"]},
+  { p:7, id:"RATEMUT",  type:"missing",  name:"⭐ Adaptive rate-limit detector",
+    desc:"On 429/403-burst, automatically drop concurrency by 50% and back off exponentially. Currently fixed via --rate-limit.",
+    tags:["future"]},
+
+  /* ===================================== PHASE 8 — AI ====================== */
+  { p:8, id:"TRIAGE",   type:"ai", name:"🤖 AI Triage",
+    desc:"Sends a redacted summary of all findings to Claude Sonnet 4.5 (Emergent LLM Key). Returns: prioritised severity ranking, dedup of similar findings, plain-English impact summary.",
+    tags:["ai/triage.py","--ai"]},
+  { p:8, id:"ROADMAP",  type:"ai", name:"🤖 Exploit Roadmap (Strict-Mode)",
+    desc:"Generates step-by-step exploit chains. Anti-hallucination guardrails: every step must cite a finding ID; AI may not invent endpoints/secrets. Output: exploit-roadmap.md.",
+    tags:["ai/exploit_roadmap.py","--exploit-roadmap"]},
+  { p:8, id:"FORGE",    type:"ai", name:"🤖 Forgery Lab",
+    desc:"AI-assisted JWT/cookie/CSRF forgery suggestions. Reads C7 outputs + source-tree to propose token-shape mutations. Strict-Mode: AI doesn't see raw secrets, only hashes + structure.",
+    tags:["ai/forgery_lab.py"]},
+  { p:8, id:"NLEXP",    type:"missing",  name:"⭐ Natural-language explanation",
+    desc:"Per-finding Arabic + English plain-language summary (for bug-bounty reports / triage tickets).",
+    tags:["future"]},
+  { p:8, id:"AIDIFF",   type:"missing",  name:"⭐ AI diff between scans",
+    desc:"Feed two `gitvulture-report.json` files; AI explains what changed and which new findings to act on first.",
+    tags:["future"]},
+  { p:8, id:"RAG-SEC",  type:"missing",  name:"⭐ RAG over CVE/HackerOne disclosures",
+    desc:"Index public disclosures into a vector store; for each finding retrieve 3 similar past reports as remediation guidance.",
+    tags:["future"]},
+
+  /* ===================================== PHASE 9 — Reporting (terminal) === */
+  { p:9, id:"JSON",     type:"terminal", name:"gitvulture-report.json",
+    desc:"Single canonical machine-readable report. Top-level keys: recon, refs, packs, rebuild, findings, sast_sinks, endpoints, ai_*, *_count.",
+    tags:["report","--json"]},
+  { p:9, id:"HTML",     type:"terminal", name:"report.html (one-page)",
+    desc:"Beautiful self-contained HTML dashboard. Embeds findings table, severity chart, file-tree of recovered_source, AI roadmap section. ARCHITECTURE.md §C — report_html.py.",
+    tags:["report_html.py","--no-html-report"]},
+  { p:9, id:"MD",       type:"terminal", name:"per-feature .md reports",
+    desc:"sast-report.md, cicd-secrets.md, jwt-analysis.md, origin-discovery.md, git-pivots.md, live-diff.md, webdav.md — drop-in artefacts.",
+    tags:["report"]},
+  { p:9, id:"SECRETS",  type:"terminal", name:"secrets/ folder export",
+    desc:"Dedicated drop-folder with README.txt, secrets.json, and raw-text copies of every match for manual testing.",
+    tags:["secrets/exporter.py"]},
+  { p:9, id:"AUDIT",    type:"terminal", name:"scope-audit.jsonl + graph-audit.jsonl",
+    desc:"Every HTTP request (with allowed/denied decision) is logged. In graph mode, every scheduler event is logged. Powers replay tooling.",
+    tags:["scope_guard.py","§5.10"]},
+  { p:9, id:"CKPT",     type:"terminal", name:"graph-mode .checkpoint.json",
+    desc:"§5.11 — chmod 0600, written every 100 tasks + once at scan-end. Restorable via --resume.",
+    tags:["§5.11"]},
+  { p:9, id:"REPORTSARIF",type:"missing",name:"⭐ SARIF output",
+    desc:"Standard Static-Analysis-Results-Interchange-Format. Drop-in for GitHub Code Scanning / Azure DevOps.",
+    tags:["future"]},
+  { p:9, id:"PDF",      type:"missing",  name:"⭐ PDF executive report",
+    desc:"Headless-chrome render of report.html with branding + table-of-contents. Useful for client deliverables.",
+    tags:["future"]},
+  { p:9, id:"DOT",      type:"missing",  name:"⭐ Graphviz .dot export (§5.10)",
+    desc:"Render the artifact graph as a .dot file so users can `dot -Tsvg` it. Beautiful for talks / proof of attack chains.",
+    tags:["future","§5.10"]},
+
+  /* ===================================== PHASE 10 — Missing / future ======= */
+  { p:10, id:"ENCCKPT",  type:"missing", name:"⭐ Encrypted checkpoint (libsodium)",
+    desc:"`--encrypt-loot <passphrase>` encrypts .checkpoint.json + secrets/ at rest with XChaCha20-Poly1305. ARCHITECTURE.md §E3.",
+    tags:["future","§E3"]},
+  { p:10, id:"REPLAY",   type:"missing", name:"⭐ gitvulture --replay audit.jsonl",
+    desc:"Re-build the artifact graph offline from a saved audit JSONL. Replays scheduler decisions deterministically. Powers post-mortem.",
+    tags:["future"]},
+  { p:10, id:"WEB-UI",   type:"missing", name:"⭐ Web UI",
+    desc:"Local FastAPI + React app to browse historical scans, drill into findings, view AI roadmap, export artefacts. Eliminates JSON-grepping for daily users.",
+    tags:["future"]},
+  { p:10, id:"WS-DASH",  type:"missing", name:"⭐ Real-time WebSocket dashboard",
+    desc:"For long scans, browser-side live view of phase progress, in-flight HTTP, findings ticker.",
+    tags:["future"]},
+  { p:10, id:"WEBHOOK",  type:"missing", name:"⭐ Slack/Discord/PagerDuty webhooks",
+    desc:"On critical-severity finding, fire a webhook with redacted summary + link to report.html.",
+    tags:["future"]},
+  { p:10, id:"MULTI",    type:"missing", name:"⭐ Mass-scan (subdomain enum + parallel)",
+    desc:"`gitvulture --massive <domain>` → subfinder + amass → all subdomains run in parallel via a job queue.",
+    tags:["future"]},
+  { p:10, id:"DIFF",     type:"missing", name:"⭐ Diff between two scans of same target",
+    desc:"After re-scan, surface ONLY new findings + disappeared findings. Critical for continuous monitoring of bug-bounty targets.",
+    tags:["future"]},
+  { p:10, id:"CRON",     type:"missing", name:"⭐ Continuous monitoring mode",
+    desc:"`gitvulture --watch <target> --interval 1d` keeps re-scanning, alerts on diffs.",
+    tags:["future"]},
+  { p:10, id:"HONEY",    type:"missing", name:"⭐ Honey-token detector",
+    desc:"Recognize Canarytokens.org + AWS canary keys; never test/verify them — they alert the defender. Should be reported and skipped.",
+    tags:["future","ethics"]},
+  { p:10, id:"GUI",      type:"missing", name:"⭐ Desktop GUI (Electron / Tauri)",
+    desc:"Native app for users who don't live in a terminal. Same engine; clickable scope wizard.",
+    tags:["future"]},
+  { p:10, id:"GHCR",     type:"missing", name:"⭐ GitHub Actions → GHCR Docker",
+    desc:"Auto-publish multi-arch Docker images on every git tag. One-line install via `docker run ghcr.io/.../gitvulture`.",
+    tags:["future","ci/cd"]},
+  { p:10, id:"SHA256",   type:"missing", name:"⭐ SHA-256 repo support (v2)",
+    desc:"Git is migrating from SHA-1 to SHA-256. Currently the index parser + BFS assume 40-char SHAs. v2 milestone.",
+    tags:["future","§10"]},
+  { p:10, id:"FUZZ",     type:"missing", name:"⭐ Mutation fuzzer",
+    desc:"For each discovered endpoint, generate boofuzz/AFL-style request mutations. Currently we only do passive checks.",
+    tags:["future"]},
+];
+
+/* ============================================================================
+   Render
+============================================================================ */
+const canvas = document.getElementById('canvas');
+const PHASES = canvas.querySelectorAll('.phase');
+
+function nodeHTML(n) {
+  const tagsHTML = (n.tags || []).map(t => {
+    const cls = t.startsWith('--') ? 'tag flag' : 'tag';
+    return `<span class="${cls}">${t}</span>`;
+  }).join('');
+  const star = n.type === 'missing' ? '<div class="star">⭐ FUTURE</div>' : '';
+  return `
+    <div class="node ${n.type}" data-id="${n.id}" data-type="${n.type}">
+      ${star}
+      <div class="id">${n.id}</div>
+      <div class="name">${n.name}</div>
+      <div class="desc">${n.desc}</div>
+      <div class="tags">${tagsHTML}</div>
+    </div>`;
+}
+
+// Group nodes by phase and render
+const byPhase = {};
+NODES.forEach(n => {
+  const k = String(n.p);
+  (byPhase[k] = byPhase[k] || []).push(n);
+});
+
+PHASES.forEach(phase => {
+  const k = String(phase.dataset.phase);
+  const grid = phase.querySelector('.grid');
+  if (!grid) return;
+  const items = byPhase[k] || [];
+  grid.innerHTML = items.map(nodeHTML).join('');
+});
+
+/* ============================================================================
+   Modal
+============================================================================ */
+const modal = document.getElementById('modal');
+const mId = document.getElementById('m-id');
+const mName = document.getElementById('m-name');
+const mDesc = document.getElementById('m-desc');
+
+function openModal(id) {
+  const n = NODES.find(x => x.id === id);
+  if (!n) return;
+  mId.textContent = `${n.id} · ${n.type.toUpperCase()}`;
+  mName.textContent = n.name;
+  mDesc.innerHTML = n.desc + (n.tags && n.tags.length
+    ? '<br><br><small style="color:#8d97b3">tags: ' + n.tags.join(', ') + '</small>'
+    : '');
+  modal.classList.add('open');
+}
+function closeModal() { modal.classList.remove('open'); }
+modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+document.addEventListener('click', e => {
+  const node = e.target.closest('.node');
+  if (node) openModal(node.dataset.id);
+});
+
+/* ============================================================================
+   Filter chips
+============================================================================ */
+const chips = document.querySelectorAll('#filters .chip');
+const TYPES = ['existing', 'ai', 'terminal', 'io', 'missing'];
+
+function applyFilters() {
+  const all = chips[0].classList.contains('active');
+  const active = new Set();
+  chips.forEach(c => {
+    if (c.classList.contains('active')) active.add(c.dataset.type);
+  });
+  // If "all" is OFF, the per-type toggles control visibility.
+  // If "all" is ON, treat anything that's active as visible.
+  document.querySelectorAll('.node').forEach(node => {
+    const t = node.dataset.type;
+    const visible = all ? active.has(t) : (active.has(t) || (active.has('all') && false));
+    node.classList.toggle('hidden', !visible);
+  });
+  // Empty-phase opacity
+  document.querySelectorAll('.phase').forEach(p => {
+    const visibleNodes = p.querySelectorAll('.node:not(.hidden)').length;
+    p.classList.toggle('empty-phase', visibleNodes === 0);
+  });
+}
+
+chips.forEach(c => {
+  c.addEventListener('click', () => {
+    if (c.dataset.type === 'all') {
+      const toState = !c.classList.contains('active');
+      chips.forEach(o => o.classList.toggle('active', toState));
+    } else {
+      c.classList.toggle('active');
+      // sync the "all" chip
+      const allOn = TYPES.every(t =>
+        Array.from(chips).find(x => x.dataset.type === t).classList.contains('active'));
+      chips[0].classList.toggle('active', allOn);
+    }
+    applyFilters();
+  });
+});
+
+applyFilters();
+
+/* ============================================================================
+   Parallax tilt for 3D effect
+============================================================================ */
+let raf;
+window.addEventListener('mousemove', e => {
+  if (raf) cancelAnimationFrame(raf);
+  raf = requestAnimationFrame(() => {
+    const dx = (e.clientX / window.innerWidth - .5) * 2;
+    const dy = (e.clientY / window.innerHeight - .5) * 2;
+    canvas.style.transform = `rotateX(${-dy * 1.5}deg) rotateY(${dx * 1.5}deg)`;
+  });
+});
+</script>
+</body>
+</html>

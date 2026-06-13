@@ -300,6 +300,16 @@ async def health():
     return {"ok": True, "llm": bool(os.environ.get("EMERGENT_LLM_KEY"))}
 
 
+@api.get("/architecture")
+async def architecture_diagram():
+    """Serve the static GitVulture architecture diagram (single-file HTML).
+    Reachable from the frontend host at `${REACT_APP_BACKEND_URL}/api/architecture`."""
+    diagram_path = ROOT_DIR.parent / "docs" / "architecture-diagram.html"
+    if not diagram_path.exists():
+        raise HTTPException(404, "architecture-diagram.html not found")
+    return FileResponse(diagram_path, media_type="text/html; charset=utf-8")
+
+
 app.include_router(api)
 
 app.add_middleware(
